@@ -734,9 +734,10 @@ struct rpc_rdma_attr {
 	bool destroy_on_disconnect;	/**< should perform cleanup */
 	bool use_srq;			/**< server use srq? */
 };
-
+#if _NO_FABRIC
 extern SVCXPRT *rpc_rdma_ncreatef(const struct rpc_rdma_attr *, const u_int,
 				  const u_int, const uint32_t);
+
 /*
  *      const struct rpc_rdma_attr;             -- RDMA configuration
  *      const u_int sendsize;                   -- max send size
@@ -750,7 +751,26 @@ svc_rdma_ncreate(const struct rpc_rdma_attr *xa, const u_int sendsize,
 {
 	return rpc_rdma_ncreatef(xa, sendsize, recvsize, SVC_CREATE_FLAG_CLOSE);
 }
+#else
+extern SVCXPRT *rpc_fabric_ncreatef(const struct rpc_rdma_attr *, const u_int,
+				  const u_int, const uint32_t);
 
+/*
+ *      const struct rpc_rdma_attr;             -- RDMA configuration
+ *      const u_int sendsize;                   -- max send size
+ *      const u_int recvsize;                   -- max recv size
+ *      const uint32_t flags;                   -- flags
+ */
+
+static inline SVCXPRT *
+svc_fabric_ncreate(const struct rpc_rdma_attr *xa, const u_int sendsize,
+		 const u_int recvsize)
+{
+	return rpc_fabric_ncreatef(xa, sendsize, recvsize, SVC_CREATE_FLAG_CLOSE);
+}
+
+
+#endif
 /*
  * Convenience functions for implementing these
  */

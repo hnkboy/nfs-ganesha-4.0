@@ -382,7 +382,7 @@ if(USE_GTEST)
 endif(USE_GTEST)
 
 # NFS RDMA
-option(USE_NFS_RDMA "enable NFS/RDMA support" OFF)
+option(USE_NFS_RDMA "enable NFS/RDMA support" ON)
 
 if(USE_NFS_RDMA)
     # NFS/RDMA is unsupported and should not be used currently
