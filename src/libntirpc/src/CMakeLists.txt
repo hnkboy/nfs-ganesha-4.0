@@ -84,6 +84,7 @@ if(USE_RPC_RDMA)
   rpc_rdma.c
   svc_rdma.c
   xdr_rdma.c
+  rpc_fabric.c
   )
 endif(USE_RPC_RDMA)
 
