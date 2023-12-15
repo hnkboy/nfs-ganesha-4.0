@@ -35,11 +35,7 @@
 #define svc_dg_create(a, b, c) svc_dg_ncreate(a, b, c)
 #define svc_fd_create(a, b, c) svc_fd_ncreate(a, b, c)
 #define svc_raw_create() svc_raw_ncreate()
-#if _NO_FABRIC
 #define svc_rdma_create(a, b, c) svc_rdma_ncreate(a, b, c)
-#else
-#define svc_rdma_create(a, b, c) svc_fabric_ncreate(a, b, c)
-#endif
 /* rpc_msg */
 #define xdr_callmsg xdr_ncallmsg
 #define xdr_callhdr xdr_ncallhdr

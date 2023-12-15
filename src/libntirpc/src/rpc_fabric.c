@@ -111,6 +111,37 @@ void *mr_desc = NULL;
 #define MSG_MR_ACCESS (FI_SEND | FI_RECV)
 #define RMA_MR_ACCESS (FI_READ | FI_WRITE | FI_REMOTE_READ | FI_REMOTE_WRITE)
 
+#define FT_ERR(fmt, ...) printf(fmt, ##__VA_ARGS__)
+#define FT_CQ_ERR(cq, entry, buf, len)					\
+	FT_ERR("cq_readerr %d (%s), provider errno: %d (%s)",		\
+		entry.err, fi_strerror(entry.err),			\
+		entry.prov_errno, fi_cq_strerror(cq, entry.prov_errno,	\
+						 entry.err_data,	\
+						 buf, len))		\
+
+
+#define FT_PRINTERR(call, retv)						\
+	do {								\
+		int saved_errno = errno;				\
+		fprintf(stderr, call "(): %s:%d, ret=%d (%s)\n",	\
+			__FILE__, __LINE__, (int) (retv),		\
+			fi_strerror((int) -(retv)));			\
+		errno = saved_errno;					\
+	} while (0)
+
+static struct xp_ops rpc_fabric_ops;
+
+static void print_cq_error(struct fid_cq* cq) {
+	int ret;
+	struct fi_cq_err_entry cq_err;
+	ret = fi_cq_readerr(cq, &cq_err, 0);
+	if (ret < 0) {
+		FT_PRINTERR("fi_cq_readerr", ret);
+	} else {
+		FT_CQ_ERR(cq, cq_err, NULL, 0);
+	}
+}
+
 
 static int post_recv(void *buf, ssize_t size)
 {
@@ -136,7 +167,7 @@ static int wait_recvcq(void)
 		ret = fi_cq_read(rxcq, &comp, 1);
 		if (ret < 0 && ret != -FI_EAGAIN) {
 			if (ret == -FI_EAVAIL) {
-				print_cq_error(recvcq);
+				print_cq_error(rxcq);
 			}
 			printf("error reading cq (%d), %s\n", ret, fi_strerror(ret));
 			return ret;
@@ -155,7 +186,6 @@ static int wait_recvcq(void)
 static int start_server(void)
 {
 	int ret = -1;
-	const struct sockaddr_in *sin;
 	char *service_port = "9228";
 
 	ret = fi_getinfo(FI_VERSION(1,20), NULL, service_port, FI_SOURCE, hints, &fi_pep);
@@ -377,9 +407,9 @@ xdr_fabric_create_ioq(RDMAXPRT *xd)
 		b += xd->sm_dr.sendsz;
 	}
 
-	while (xd->sm_dr.ioq.ioq_uv.uvqh.qcount < CALLQ_SIZE) {
-		xdr_rdma_callq(xd);
-	}
+	//while (xd->sm_dr.ioq.ioq_uv.uvqh.qcount < CALLQ_SIZE) {
+	//	xdr_rdma_callq(xd);
+	//}
 	return 0;
 }
 
@@ -398,7 +428,7 @@ rpc_fabric_thread(void *nullarg)
 	/*初始化各种rdma服务*/
 	hints = fi_allocinfo();
 	if (!hints)
-		return EXIT_FAILURE;
+		return NULL;
 
 	//dst_addr = argv[1];
 	hints->ep_attr->type = FI_EP_MSG; // 可靠数据报端点, 类似socket, 但无须执行listen/connect/accept
@@ -415,24 +445,24 @@ rpc_fabric_thread(void *nullarg)
 	__warnx(TIRPC_DEBUG_FLAG_ERROR,
 			"%s() NFS/FABRIC start server, rc=%d.", __func__, rc);
 	if (rc) {
-		return;
+		return NULL;
 	}
 	rc = xdr_fabric_create_ioq(xd);
 	__warnx(TIRPC_DEBUG_FLAG_ERROR,
 			"%s() NFS/FABRIC create ioq, rc=%d.", __func__,rc);
 	if (rc) {
-		return;
+		return NULL;
 	}
 	rc = server_connect(xd);
 	__warnx(TIRPC_DEBUG_FLAG_ERROR,
 			"%s() NFS/FABRIC start server, rc=%d.", __func__, rc);
 	if (rc) {
-		return;
+		return NULL;
 	}
 
-	rc = post_recv();
+	rc = post_recv(xd->buffer_aligned, xd->sm_dr.sendsz);
 	if (!rc) {
-		wait_recvcq(void);
+		wait_recvcq();
 	}
 	else {
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
@@ -440,8 +470,7 @@ rpc_fabric_thread(void *nullarg)
 
 	}
 
-out:
-	return;
+	return NULL;
 
 }
 
@@ -582,7 +611,7 @@ rpc_fabric_ncreatef(const struct rpc_rdma_attr *xa,
 		return NULL;
 	}
 
-	xd = rpc_rdma_allocate(xa);
+	xd = rpc_fabric_allocate(xa);
 	if (!xd) {
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
 			"%s:%u ERROR (return)",
@@ -621,7 +650,7 @@ rpc_fabric_ncreatef(const struct rpc_rdma_attr *xa,
 		/* default */
 		xd->sm_dr.recvsz = xd->sm_dr.pagesz;
 	}
-
+#if 0
 	/* round up to the next power of two */
 	rpc_rdma_state.c_r.q_size = 2;
 	while (rpc_rdma_state.c_r.q_size < xa->backlog) {
@@ -630,14 +659,14 @@ rpc_fabric_ncreatef(const struct rpc_rdma_attr *xa,
 	rpc_rdma_state.c_r.id_queue = mem_alloc(rpc_rdma_state.c_r.q_size
 						* sizeof(struct rdma_cm_id *));
 	sem_init(&rpc_rdma_state.c_r.u_sem, 0, rpc_rdma_state.c_r.q_size);
-
+#endif
 
 	__warnx(TIRPC_DEBUG_FLAG_RPC_RDMA,
 		"%s() NFS/RDMA engine bound",
 		__func__);
-	pthread_t *thrid;
-	rc = rpc_fabric_thread_create(thrid, xd,
-				rpc_fabric_thread, NULL);
+	pthread_t thrid;
+	rc = rpc_fabric_thread_create(&thrid, 65536,
+				rpc_fabric_thread, (void *)xd);
 	__warnx(TIRPC_DEBUG_FLAG_ERROR,
 			"%s() NFS/FABRIC create thread, rc=%d.", __func__,rc);
 

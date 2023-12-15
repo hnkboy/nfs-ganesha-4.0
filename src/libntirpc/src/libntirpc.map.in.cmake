@@ -111,6 +111,7 @@ NTIRPC_${NTIRPC_VERSION_BASE} {
     rpc_perror;
     rpc_nullproc;
     rpc_rdma_ncreatef;
+    rpc_fabric_ncreatef;
     rpc_reg;
     rpc_sperror;
     rpcb_find_mapped_addr;

@@ -763,7 +763,7 @@ extern SVCXPRT *rpc_fabric_ncreatef(const struct rpc_rdma_attr *, const u_int,
  */
 
 static inline SVCXPRT *
-svc_fabric_ncreate(const struct rpc_rdma_attr *xa, const u_int sendsize,
+svc_rdma_ncreate(const struct rpc_rdma_attr *xa, const u_int sendsize,
 		 const u_int recvsize)
 {
 	return rpc_fabric_ncreatef(xa, sendsize, recvsize, SVC_CREATE_FLAG_CLOSE);
