@@ -104,6 +104,12 @@ char *buf = NULL, *tx_buf, *rx_buf;
 struct fid_mr no_mr;
 static struct fid_mr *mr;
 void *mr_desc = NULL;
+
+
+#define BUF_SIZE 64
+char g_rx_buf[BUF_SIZE];
+
+
 #define OFI_MR_BASIC_MAP (FI_MR_ALLOCATED | FI_MR_PROV_KEY | FI_MR_VIRT_ADDR)
 
 #define MR_KEY 0xC0DE
@@ -129,6 +135,10 @@ void *mr_desc = NULL;
 		errno = saved_errno;					\
 	} while (0)
 
+#define FA_PRINT(fmt, ...)						\
+	__warnx(TIRPC_DEBUG_FLAG_ERROR, \
+	"%s() NFS/FABRIC  "fmt"\n", __func__, ##__VA_ARGS__);
+
 static struct xp_ops rpc_fabric_ops;
 
 static void print_cq_error(struct fid_cq* cq) {
@@ -149,11 +159,13 @@ static int post_recv(void *buf, ssize_t size)
 	do {
 		ret = fi_recv(ep, buf, size, mr, remote_fi_addr, NULL);
 		if (ret && ret != -FI_EAGAIN) {
-			printf("error posting recv buffer (%d\n", ret);
+			FA_PRINT("error fi_recv %d\n", ret);
 			return ret;
 		}
-		if (ret == -FI_EAGAIN)
+		if (ret == -FI_EAGAIN){
 			(void) fi_cq_read(rxcq, NULL, 0);
+			FA_PRINT("error fi_recv %d\n", ret);
+		}
 	} while (ret);
 	return 0;
 }
@@ -228,6 +240,8 @@ static int server_connect(RDMAXPRT *xd)
 	struct fi_eq_cm_entry entry;
 	uint32_t event;
 
+	__warnx(TIRPC_DEBUG_FLAG_ERROR,
+			"%s() NFS/FABRIC eq sread . wait.", __func__);
 	rd = fi_eq_sread(eq, &event, &entry, sizeof(entry), -1, 0); // 等待读取客户端触发的服务端事件, 读取事件, 推动进展(驱动程序运转)
 	if (rd != sizeof(entry)) {
 		ret = (int) rd;
@@ -297,22 +311,32 @@ static int server_connect(RDMAXPRT *xd)
 		return ret;
 	}
 #endif
+	//mr = &no_mr;
+	ret = fi_mr_reg(domain, xd->buffer_aligned, xd->buffer_total, FI_RECV,
+			0, MR_KEY, 0, &mr, NULL);
+	if (ret) {
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+				"%s() NFS/FABRIC fi_mr_reg faild ret:%d.", __func__, ret);
+		return ret;
+	}
+	mr_desc = fi_mr_desc(mr);
 
-
+	ret = post_recv(xd->buffer_aligned, xd->sm_dr.sendsz);
+	FA_PRINT("post recv success %d ", ret);
 
 	ret = fi_accept(ep, NULL, 0);
 	if (ret) {
 		printf("fi_accept: %d\n", ret);
 		return ret;
 	}
-	printf("fi_accept: %d\n", ret);
 	rd = fi_eq_sread(eq, &event, &entry, sizeof(entry), -1, 0);
 	if (rd != sizeof(entry)) {
 		ret = (int) rd;
 		printf("fi_eq_read: %d\n", ret);
 		return ret;
 	}
-	printf("fi_eq_read: %d\n", ret);
+	__warnx(TIRPC_DEBUG_FLAG_ERROR,
+			"%s() NFS/FABRIC accept success . wait.", __func__);
 	return 0;
 err:
     if (fi)
@@ -329,13 +353,14 @@ int
 xdr_fabric_create_ioq(RDMAXPRT *xd)
 {
 	uint8_t *b;
-
+#if 0
 	if (!xd->pd || !xd->pd->pd) {
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
 			"%s() %p[%u] missing Protection Domain",
 			__func__, xd, xd->state);
 		return ENODEV;
 	}
+#endif
 
 	/* pre-allocated buffer_total:
 	 * the number of credits is irrelevant here.
@@ -349,8 +374,8 @@ xdr_fabric_create_ioq(RDMAXPRT *xd)
 	xd->buffer_aligned = mem_aligned(xd->sm_dr.pagesz, xd->buffer_total);
 
 	__warnx(TIRPC_DEBUG_FLAG_ERROR,
-	"%s() buffer_aligned at %p, pagesz %d, buffer_total %d, ",
-		__func__, xd->buffer_aligned);
+	"%s() NFS/FABRIC buffer_aligned at %p, buffer_total %d,  rx depth %d, rx sendsz %d. ",
+		__func__, xd->buffer_aligned, xd->buffer_total,  xd->xa->sq_depth, xd->sm_dr.sendsz );
 
 #if 0
 	/* register it in two chunks for read and write??? */
@@ -454,20 +479,21 @@ rpc_fabric_thread(void *nullarg)
 		return NULL;
 	}
 	rc = server_connect(xd);
-	__warnx(TIRPC_DEBUG_FLAG_ERROR,
-			"%s() NFS/FABRIC start server, rc=%d.", __func__, rc);
 	if (rc) {
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+				"%s() NFS/FABRIC start server fiald, rc=%d.", __func__, rc);
 		return NULL;
 	}
 
 	rc = post_recv(xd->buffer_aligned, xd->sm_dr.sendsz);
 	if (!rc) {
 		wait_recvcq();
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+				"%s() NFS/FABRIC recv msg: \"%s\", rc %d.", __func__, xd->buffer_aligned, rc);
 	}
 	else {
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
 				"%s() NFS/FABRIC  post recv faild, rc=%d.", __func__, rc);
-
 	}
 
 	return NULL;
