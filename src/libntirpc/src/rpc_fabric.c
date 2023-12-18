@@ -117,6 +117,7 @@ void *mr_desc = NULL;
 struct rpc_rdma_cbc *global_cbc;
 struct poolq_entry *pentry ;
  struct xdr_ioq_uv *global_ioq;
+RDMAXPRT *global_xd;
 
 #define BUF_SIZE 64
 char g_rx_buf[BUF_SIZE];
@@ -234,9 +235,9 @@ static int post_recv(RDMAXPRT *xd)
 	pentry = have;
 	global_cbc = cbc;
 	global_ioq = IOQ_(have);
-
+	global_xd = xd;
 	__warnx(TIRPC_DEBUG_FLAG_ERROR,
-			"%s() NFS/FABRIC cbc %p, base .", __func__, cbc, IOQ_(have)->v.vio_head);
+			"%s() NFS/FABRIC cbc %p, base %p.", __func__, cbc, IOQ_(have)->v.vio_head);
 	do {
 		ret = fi_recv(ep, IOQ_(have)->v.vio_head,
 			xd->sm_dr.recvsz, mr, remote_fi_addr, NULL);
@@ -262,6 +263,57 @@ static int wait_recvcq(void)
 		if (ret < 0 && ret != -FI_EAGAIN) {
 			if (ret == -FI_EAVAIL) {
 				print_cq_error(rxcq);
+			}
+			printf("error reading cq (%d), %s\n", ret, fi_strerror(ret));
+			return ret;
+		}
+	} while (ret != 1);
+
+	if (comp.flags & FI_RECV)
+		printf("I received a message!\n");
+	else if (comp.flags & FI_SEND)
+		printf("My message got sent!\n");
+	ret = comp.len;
+	return ret;
+}
+
+
+/* Post a send buffer. This call does not ensure a message has been sent, just that
+ * a buffer has been submitted to OFI to be sent. Unlike a receive buffer, a send
+ * needs a valid fi_addr as input to tell the provider where to send the message.
+ * Similar to the receive buffer posting porcess, when posting a send buffer, if the
+ * provider is not ready to process messages, it may return -FI_EAGAIN. This does not
+ * indicate an error, but rather that the application should try again later. Just like
+ * the receive, we drive progress with fi_cq_read if this is the case.
+ */
+static int post_send(void *buf, ssize_t size)
+{
+        int ret;
+
+        do {
+                ret = fi_send(ep, buf, size, NULL, remote_fi_addr, NULL);
+                if (ret && ret != -FI_EAGAIN) {
+                        printf("error posting send buffer (%d)\n", ret);
+                        return ret;
+                }
+                if (ret == -FI_EAGAIN)
+                        (void) fi_cq_read(txcq, NULL, 0);
+        } while (ret);
+
+        return 0;
+}
+
+
+static int wait_sendcq(void)
+{
+	struct fi_cq_err_entry comp;
+	int ret;
+
+	do {
+		ret = fi_cq_read(txcq, &comp, 1);
+		if (ret < 0 && ret != -FI_EAGAIN) {
+			if (ret == -FI_EAVAIL) {
+				print_cq_error(txcq);
 			}
 			printf("error reading cq (%d), %s\n", ret, fi_strerror(ret));
 			return ret;
@@ -764,7 +816,46 @@ static inline uint64_t decode_hyper(uint64_t *iptr)
 	return ((uint64_t) ntohl(((uint32_t*)iptr)[0]) << 32)
 		| (ntohl(((uint32_t*)iptr)[1]));
 }
+static inline uint32_t *
+xdr_rdma_get_write_array(void *data)
+{
+	uint32_t *ptr = xdr_rdma_get_read_list(data);
 
+	xdr_rdma_skip_read_list(&ptr);
+
+	return ptr;
+}
+
+static inline uint32_t *
+xdr_rdma_get_reply_array(void *data)
+{
+	uint32_t *ptr = xdr_rdma_get_read_list(data);
+
+	xdr_rdma_skip_read_list(&ptr);
+	xdr_rdma_skip_write_list(&ptr);
+
+	return ptr;
+}
+
+static inline uint32_t *
+xdr_rdma_skip_header(struct rdma_msg *rmsg)
+{
+	uint32_t *ptr = &rmsg->rdma_body.rdma_msg.rdma_reads;
+
+	xdr_rdma_skip_read_list(&ptr);
+	xdr_rdma_skip_write_list(&ptr);
+	xdr_rdma_skip_reply_array(&ptr);
+
+	return ptr;
+}
+
+static inline uintptr_t
+xdr_rdma_header_length(struct rdma_msg *rmsg)
+{
+	uint32_t *ptr = xdr_rdma_skip_header(rmsg);
+
+	return ((uintptr_t)ptr - (uintptr_t)rmsg);
+}
 
 bool
 xdr_fabric_svc_recv(struct rpc_rdma_cbc *cbc, u_int32_t xid)
@@ -855,7 +946,7 @@ xdr_fabric_svc_recv(struct rpc_rdma_cbc *cbc, u_int32_t xid)
 						+ sizeof(struct xdr_read_list);
 
 	}
-
+	post_recv(global_xd);
 
 #if 0
 	RDMAXPRT *xprt;
@@ -1056,7 +1147,7 @@ rpc_fabric_thread(void *nullarg)
 				"%s() NFS/FABRIC start server fiald, rc=%d.", __func__, rc);
 		return NULL;
 	}
-	//rc = post_recv(xd->buffer_aligned, xd->sm_dr.sendsz);
+
 	rc = post_recv(xd);
 	if (!rc) {
 		rc = wait_recvcq();
@@ -1064,10 +1155,16 @@ rpc_fabric_thread(void *nullarg)
 		//		"%s() NFS/FABRIC recv msg: \"%s\", rc %d.", __func__, xd->buffer_aligned, rc);
 				"%s() NFS/FABRIC recv msg rc %d.", __func__, rc);
 		xdr_fabric_wrap_callback(global_cbc, xd);
-	}
-	else {
+	} else {
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
 				"%s() NFS/FABRIC  post recv faild, rc=%d.", __func__, rc);
+	}
+	while (1){
+		rc = wait_recvcq();
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+		//		"%s() NFS/FABRIC recv msg: \"%s\", rc %d.", __func__, xd->buffer_aligned, rc);
+				"%s() NFS/FABRIC recv msg rc %d.", __func__, rc);
+		xdr_fabric_wrap_callback(global_cbc, xd);
 	}
 
 	return NULL;
@@ -1307,27 +1404,250 @@ svc_fabric_stat(SVCXPRT *xprt)
 
 	return (XPRT_IDLE);
 }
-
-
+static enum xprt_stat  svc_fabric_reply(struct svc_req *req);
 extern mutex_t ops_lock;
 struct xp_ops rpc_fabric_ops = {
 	.xp_recv = svc_fabric_rendezvous,
 	.xp_stat = svc_fabric_stat,
 	.xp_decode = (svc_req_fun_t)abort,
-	.xp_reply = (svc_req_fun_t)abort,
+	.xp_reply = svc_fabric_reply,
 	.xp_checksum = NULL,		/* not used */
 	.xp_unlink = rpc_fabric_unlink_it,
 	.xp_destroy = rpc_fabric_destroy_it,
 	.xp_control = rpc_fabric_control,
 	.xp_free_user_data = NULL,	/* no default */
 };
+#define x_xprt(xdrs) ((RDMAXPRT *)((xdrs)->x_lib[1]))
+bool
+xdr_fabric_svc_flushout(struct rpc_rdma_cbc *cbc)
+{
+	RDMAXPRT *xprt;
+	struct rpc_msg *msg;
+	struct rdma_msg *cmsg;
+	struct rdma_msg *rmsg;
+	struct xdr_write_list *w_array;
+	struct xdr_write_list *reply_array;
+	struct xdr_ioq_uv *head_uv;
+	struct xdr_ioq_uv *work_uv;
+
+	if (!cbc) {
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+			"%s() no context?",
+			__func__);
+		return (false);
+	}
+	xprt = x_xprt(cbc->workq.xdrs);
+
+	/* swap reply body from holdq to workq */
+	TAILQ_CONCAT(&cbc->workq.ioq_uv.uvqh.qh, &cbc->holdq.ioq_uv.uvqh.qh, q);
+	cbc->workq.ioq_uv.uvqh.qcount = cbc->holdq.ioq_uv.uvqh.qcount;
+	cbc->holdq.ioq_uv.uvqh.qcount = 0;
+
+	work_uv = IOQ_(TAILQ_FIRST(&cbc->workq.ioq_uv.uvqh.qh));
+	msg = (struct rpc_msg *)(work_uv->v.vio_head);
+	/* work_uv->v.vio_tail has been set by xdr_tail_update() */
+
+	switch(ntohl(msg->rm_direction)) {
+	    case CALL:
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+			"%s() nothing to send on CALL (%u)",
+			__func__, ntohl(msg->rm_direction));
+		return (true);
+	    case REPLY:
+		/* good to go */
+		break;
+	    default:
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+			"%s() bad rm_direction (%u)",
+			__func__, ntohl(msg->rm_direction));
+		return (false);
+	}
+	cmsg = m_(cbc->call_head);
+
+	if (cmsg->rdma_xid != msg->rm_xid) {
+		__warnx(TIRPC_DEBUG_FLAG_XDR,
+			"%s() xid (%u) not equal RPC (%u)",
+			__func__, ntohl(cmsg->rdma_xid), ntohl(msg->rm_xid));
+		return (false);
+	}
+
+	/* usurp the holdq for the head, move to workq later */
+	head_uv = IOQ_(xdr_ioq_uv_fetch(&cbc->holdq, &xprt->outbufs.uvqh,
+					"sreply head", 1, IOQ_FLAG_NONE));
+
+	/* entry was already added directly to the queue */
+	head_uv->v.vio_head = head_uv->v.vio_base;
+	/* tail adjusted below */
+	head_uv->v.vio_wrap = (char *)head_uv->v.vio_base + xprt->sm_dr.sendsz;
+
+	/* build the header that goes with the data */
+	rmsg = m_(head_uv->v.vio_head);
+	rmsg->rdma_xid = cmsg->rdma_xid;
+	rmsg->rdma_vers = cmsg->rdma_vers;
+	rmsg->rdma_credit = htonl(xprt->xa->credits);
+
+	/* no read, write chunks. */
+	rmsg->rdma_body.rdma_msg.rdma_reads = 0; /* htonl(0); */
+	rmsg->rdma_body.rdma_msg.rdma_writes = 0; /* htonl(0); */
+
+	reply_array = (wl_t *)cbc->reply_chunk;
+	if (reply_array->present == 0) {
+		rmsg->rdma_type = htonl(0); //RDMA_MSG
+
+		/* no reply chunk either */
+		rmsg->rdma_body.rdma_msg.rdma_reply = 0; /* htonl(0); */
+
+		head_uv->v.vio_tail = head_uv->v.vio_head
+					+ xdr_rdma_header_length(rmsg);
+
+		rpcrdma_dump_msg(head_uv, "sreply head", msg->rm_xid);
+		rpcrdma_dump_msg(work_uv, "sreply body", msg->rm_xid);
+	} else {
+		uint32_t i = 0;
+		uint32_t n = ntohl(reply_array->elements);
+
+		rmsg->rdma_type = htonl(1);//RDMA_NOMSG
+
+		/* reply chunk */
+		w_array = (wl_t *)&rmsg->rdma_body.rdma_msg.rdma_reply;
+		w_array->present = htonl(1);
+
+		while (i < n) {
+			struct xdr_rdma_segment *c_seg =
+				&reply_array->entry[i].target;
+			struct xdr_rdma_segment *w_seg =
+				&w_array->entry[i++].target;
+			uint32_t length = ntohl(c_seg->length);
+			uint32_t k = length / xprt->sm_dr.sendsz;
+			uint32_t m = length % xprt->sm_dr.sendsz;
+
+			if (m) {
+				/* need fractional buffer */
+				k++;
+			}
+
+			/* ensure never asking for more buffers than allowed */
+			if (k > xprt->xa->max_send_sge) {
+				__warnx(TIRPC_DEBUG_FLAG_XDR,
+					"%s() requested chunk %" PRIu32
+					" is too long (%" PRIu32 ">%" PRIu32 ")",
+					__func__, length, k,
+					xprt->xa->max_send_sge);
+				k = xprt->xa->max_send_sge;
+			}
+
+			*w_seg = *c_seg;
+
+			/* sometimes, back-to-back buffers could be sent
+			 * together.  releases of unused buffers and
+			 * other events eventually scramble the buffers
+			 * enough that there's no gain in efficiency.
+			 */
+			//xdr_rdma_wait_write_cb(xprt, cbc, k, w_seg);
+
+			while (0 < k--) {
+				struct poolq_entry *have =
+					TAILQ_FIRST(&cbc->workq.ioq_uv.uvqh.qh);
+
+				TAILQ_REMOVE(&cbc->workq.ioq_uv.uvqh.qh, have, q);
+				(cbc->workq.ioq_uv.uvqh.qcount)--;
+
+				rpcrdma_dump_msg(IOQ_(have), "sreply body",
+						 msg->rm_xid);
+				xdr_ioq_uv_release(IOQ_(have));
+			}
+		}
+		w_array->elements = htonl(i);
+
+		head_uv->v.vio_tail = head_uv->v.vio_head
+					+ xdr_rdma_header_length(rmsg);
+		rpcrdma_dump_msg(head_uv, "sreply head", msg->rm_xid);
+	}
+
+	/* actual send, callback will take care of cleanup */
+	TAILQ_REMOVE(&cbc->holdq.ioq_uv.uvqh.qh, &head_uv->uvq, q);
+	(cbc->holdq.ioq_uv.uvqh.qcount)--;
+	(cbc->workq.ioq_uv.uvqh.qcount)++;
+	TAILQ_INSERT_HEAD(&cbc->workq.ioq_uv.uvqh.qh, &head_uv->uvq, q);
+
+	{
+	struct poolq_entry *have = TAILQ_FIRST(&cbc->workq.ioq_uv.uvqh.qh);
+	uint32_t length = ioquv_length(IOQ_(have));
+	void *addr = (void *)(uintptr_t)(IOQ_(have)->v.vio_head);
+	__warnx(TIRPC_DEBUG_FLAG_ERROR,
+			"%s() NFS/FABRIC addr %p, size %d.", __func__, addr, length);
+	post_send(addr, (ssize_t)length);
+	wait_sendcq();
+	__warnx(TIRPC_DEBUG_FLAG_ERROR,
+			"%s() NFS/FABRIC send success.", __func__);
+
+	}
 
 
 
+
+
+
+	/* free the old inbuf we only kept for header */
+	xdr_ioq_uv_release(cbc->call_uv);
+	return (true);
+}
+
+enum xprt_stat
+svc_fabric_reply(struct svc_req *req)
+{
+	XDR *xdrs = req->rq_xdrs;
+	struct xdr_ioq *holdq = XIOQ(xdrs);
+	struct rpc_rdma_cbc *cbc =
+		opr_containerof(holdq, struct rpc_rdma_cbc, holdq);
+
+	__warnx(TIRPC_DEBUG_FLAG_SVC_RDMA,
+		"%s() xprt %p req %p cbc %p outgoing xdr %p\n",
+		__func__, req->rq_xprt, req, cbc, xdrs);
+
+	if (!xdr_rdma_svc_reply(cbc, 0)){
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+			"%s: xdr_rdma_svc_reply failed (will set dead)",
+			__func__);
+		return (XPRT_DIED);
+	}
+	xdrs->x_op = XDR_ENCODE;
+
+	if (!xdr_reply_encode(xdrs, &req->rq_msg)) {
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+			"%s: xdr_reply_encode failed (will set dead)",
+			__func__);
+		return (XPRT_DIED);
+	}
+	xdr_tail_update(xdrs);
+
+	if (req->rq_msg.rm_reply.rp_stat == MSG_ACCEPTED
+	 && req->rq_msg.rm_reply.rp_acpt.ar_stat == SUCCESS
+	 && req->rq_auth
+	 && !SVCAUTH_WRAP(req, xdrs)) {
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+			"%s: SVCAUTH_WRAP failed (will set dead)",
+			__func__);
+		return (XPRT_DIED);
+	}
+	xdr_tail_update(xdrs);
+#if 1
+	if (!xdr_fabric_svc_flushout(cbc)){
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+			"%s: flushout failed (will set dead)",
+			__func__);
+		return (XPRT_DIED);
+	}
+#endif
+
+	return (XPRT_IDLE);
+}
+
+
+static struct xp_ops ops;
 static void
 svc_fabric_ops(SVCXPRT *xprt)
 {
-	static struct xp_ops ops;
 
 	/* VARIABLES PROTECTED BY ops_lock: ops, xp_type */
 
@@ -1340,7 +1660,6 @@ svc_fabric_ops(SVCXPRT *xprt)
 		ops.xp_recv = NULL;
 		ops.xp_stat = NULL;
 		ops.xp_decode = svc_fabric_decode;
-		//ops.xp_reply = svc_rdma_reply;
 		ops.xp_reply = NULL;
 		ops.xp_checksum = NULL;		/* not used */
 		ops.xp_destroy = NULL,
