@@ -234,6 +234,8 @@ static int post_recv(RDMAXPRT *xd)
 	pentry = have;
 	global_cbc = cbc;
 
+	__warnx(TIRPC_DEBUG_FLAG_ERROR,
+			"%s() NFS/FABRIC cbc %p, base .", __func__, cbc, IOQ_(have)->v.vio_head);
 	do {
 		ret = fi_recv(ep, IOQ_(have)->v.vio_head,
 			xd->sm_dr.recvsz, mr, remote_fi_addr, NULL);
@@ -269,16 +271,17 @@ static int wait_recvcq(void)
 		printf("I received a message!\n");
 	else if (comp.flags & FI_SEND)
 		printf("My message got sent!\n");
-
-	return 0;
+	ret = comp.len;
+	return ret;
 }
 
 
-static int start_server(void)
+static int start_server(RDMAXPRT *xd)
 {
 	int ret = -1;
-	char *service_port = "9228";
+	//char *service_port = "9228";
 
+	char *service_port = xd->xa->port;
 	ret = fi_getinfo(FI_VERSION(1,20), NULL, service_port, FI_SOURCE, hints, &fi_pep);
 	if (ret) {
 		printf("fi_getinfo error (%d)\n", ret);
@@ -598,6 +601,170 @@ svc_fabric_rendezvous(SVCXPRT *xprt)
 }
 
 
+#if 1
+
+#define DUMP_BYTES_PER_GROUP (4)
+#define DUMP_GROUPS_PER_LINE (4)
+#define DUMP_BYTES_PER_LINE (DUMP_BYTES_PER_GROUP * DUMP_GROUPS_PER_LINE)
+
+static void
+rpcrdma_dump_msg(struct xdr_ioq_uv *data, char *comment, uint32_t xid)
+{
+	char *buffer;
+	uint8_t *datum = data->v.vio_head;
+	int sized = ioquv_length(data);
+	int buffered = (((sized / DUMP_BYTES_PER_LINE) + 1 /*partial line*/)
+			* (12 /* heading */
+			   + (((DUMP_BYTES_PER_GROUP * 2 /*%02X*/) + 1 /*' '*/)
+			      * DUMP_GROUPS_PER_LINE)))
+			      * 			+ 1 /*'\0'*/;
+	int i = 0;
+	int m = 0;
+
+	xid = ntohl(xid);
+	if (sized == 0) {
+		__warnx(TIRPC_DEBUG_FLAG_XDR,
+			"rpcrdma 0x%" PRIx32 "(%" PRIu32 ") %s?",
+			xid, xid, comment);
+		return;
+	}
+	buffer = (char *)mem_alloc(buffered);
+
+	while (sized > i) {
+		int j = sized - i;
+		int k = j < DUMP_BYTES_PER_LINE ? j : DUMP_BYTES_PER_LINE;
+		int l = 0;
+		int r = sprintf(&buffer[m], "\n%10d:", i);	/* heading */
+
+		if (r < 0)
+			goto quit;
+		m += r;
+
+		for (; l < k; l++) {
+			if (l % DUMP_BYTES_PER_GROUP == 0)
+				buffer[m++] = ' ';
+
+			r = sprintf(&buffer[m], "%02X", datum[i++]);
+			if (r < 0)
+				goto quit;
+			m += r;
+		}
+	}
+quit:
+	buffer[m] = '\0';	/* in case of error */
+	__warnx(TIRPC_DEBUG_FLAG_ERROR,
+		"NFS/FABRIC rpcrdma 0x%" PRIx32 "(%" PRIu32 ") %s:%s\n",
+		xid, xid, comment, buffer);
+	mem_free(buffer, buffered);
+}
+#endif /* rpcrdma_dump_msg */
+
+/*
+ * ** match RFC-5666bis as closely as possible
+ * */
+struct xdr_rdma_segment {
+	uint32_t handle;	/* Registered memory handle */
+	uint32_t length;	/* Length of the chunk in bytes */
+	uint64_t offset;	/* Chunk virtual address or offset */
+};
+
+struct xdr_read_list {
+	uint32_t present;	/* 1 indicates presence */
+	uint32_t position;	/* Position in XDR stream */
+	struct xdr_rdma_segment target;
+};
+
+struct xdr_write_chunk {
+	struct xdr_rdma_segment target;
+};
+
+struct xdr_write_list {
+	uint32_t present;	/* 1 indicates presence */
+	uint32_t elements;	/* Number of array elements */
+	struct xdr_write_chunk entry[0];
+};
+
+
+struct rpc_rdma_header {
+	uint32_t rdma_reads;
+	uint32_t rdma_writes;
+	uint32_t rdma_reply;
+	/* rpc body follows */
+};
+
+struct rpc_rdma_header_nomsg {
+	uint32_t rdma_reads;
+	uint32_t rdma_writes;
+	uint32_t rdma_reply;
+};
+
+
+struct rdma_msg {
+	uint32_t rdma_xid;	/* Mirrors the RPC header xid */
+	uint32_t rdma_vers;	/* Version of this protocol */
+	uint32_t rdma_credit;	/* Buffers requested/granted */
+	uint32_t rdma_type;	/* Type of message (enum rdma_proc) */
+	union {
+		struct rpc_rdma_header		rdma_msg;
+		struct rpc_rdma_header_nomsg	rdma_nomsg;
+	} rdma_body;
+};
+
+
+#define m_(ptr) ((struct rdma_msg *)ptr)
+#define xrl(ptr) ((struct xdr_read_list*)ptr)
+
+typedef struct xdr_write_list wl_t;
+#define xwl(ptr) ((struct xdr_write_list*)ptr)
+
+static inline void
+xdr_rdma_skip_read_list(uint32_t **pptr)
+{
+	while (xrl(*pptr)->present) {
+		*pptr += sizeof(struct xdr_read_list)
+			 / sizeof(**pptr);
+	}
+	(*pptr)++;
+}
+
+static inline void
+xdr_rdma_skip_write_list(uint32_t **pptr)
+{
+	if (xwl(*pptr)->present) {
+		*pptr += (sizeof(struct xdr_write_list)
+			  + sizeof(struct xdr_write_chunk)
+			    * ntohl(xwl(*pptr)->elements))
+			 / sizeof(**pptr);
+	}
+	(*pptr)++;
+}
+
+static inline void
+xdr_rdma_skip_reply_array(uint32_t **pptr)
+{
+	if (xwl(*pptr)->present) {
+		*pptr += (sizeof(struct xdr_write_list)
+			  + sizeof(struct xdr_write_chunk)
+			    * ntohl(xwl(*pptr)->elements))
+			 / sizeof(**pptr);
+	} else {
+		(*pptr)++;
+	}
+}
+
+static inline uint32_t *
+xdr_rdma_get_read_list(void *data)
+{
+	return &m_(data)->rdma_body.rdma_msg.rdma_reads;
+}
+
+static inline uint64_t decode_hyper(uint64_t *iptr)
+{
+	return ((uint64_t) ntohl(((uint32_t*)iptr)[0]) << 32)
+		| (ntohl(((uint32_t*)iptr)[1]));
+}
+
+
 bool
 xdr_fabric_svc_recv(struct rpc_rdma_cbc *cbc, u_int32_t xid)
 {
@@ -606,7 +773,76 @@ xdr_fabric_svc_recv(struct rpc_rdma_cbc *cbc, u_int32_t xid)
 	cbc->call_head = cbc->call_uv->v.vio_head;
 
 	__warnx(TIRPC_DEBUG_FLAG_ERROR,
-			"NFS/FABRIC %s: xdr_svc_recv %s", __func__, cbc->call_head);
+			"NFS/FABRIC %s: decode  xdr_svc_recv cbc %p, head %p.", __func__, cbc, cbc->call_head);
+
+	__warnx(TIRPC_DEBUG_FLAG_ERROR,
+			"NFS/FABRIC %s: decode  context %s.", __func__, cbc->call_head);
+
+
+	struct rdma_msg *cmsg;
+	cbc->call_uv = IOQ_(TAILQ_FIRST(&cbc->workq.ioq_uv.uvqh.qh));
+	(cbc->call_uv->u.uio_references)++;
+	cbc->call_head = cbc->call_uv->v.vio_head;
+	cmsg = (struct rdma_msg *)(cbc->call_head);
+	rpcrdma_dump_msg(cbc->call_uv, "call", cmsg->rdma_xid);
+
+	switch (ntohl(cmsg->rdma_vers)) {
+	case 1:
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+				"NFS/FABRIC %s: rdma_vers %.d.", __func__, ntohl(cmsg->rdma_vers));
+		break;
+	default:
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+				"NFS/FABRIC %s: rdma_vers faild %" PRIu32 "?", __func__, ntohl(cmsg->rdma_vers));
+		return (false);
+	}
+	/* locate NFS/RDMA (RFC-5666) chunk positions */
+	cbc->read_chunk = xdr_rdma_get_read_list(cmsg);
+	cbc->write_chunk = (wl_t *)cbc->read_chunk;
+	xdr_rdma_skip_read_list((uint32_t **)&cbc->write_chunk);
+	cbc->reply_chunk = cbc->write_chunk;
+	xdr_rdma_skip_write_list((uint32_t **)&cbc->reply_chunk);
+	cbc->call_data = cbc->reply_chunk;
+	xdr_rdma_skip_reply_array((uint32_t **)&cbc->call_data);
+ 
+
+//	uint32_t k;
+//	uint32_t l;
+
+	while (xrl(cbc->read_chunk)->present != 0
+	    && xrl(cbc->read_chunk)->position == 0) {
+
+//		l = ntohl(xrl(cbc->read_chunk)->target.length);
+//
+		uint32_t handle = ntohl(xrl(cbc->read_chunk)->target.handle);
+		uint32_t length = ntohl(xrl(cbc->read_chunk)->target.length);
+		uint64_t offset = decode_hyper(&(xrl(cbc->read_chunk)->target.offset));
+
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+			"NFS/FABRIC %s: chunk handle %d, length %d, offset %ld.", __func__, handle, length, offset);
+
+#if 0
+		k = xdr_rdma_chunk_fetch(&cbc->workq, &xprt->inbufs.uvqh,
+					 "call chunk", l,
+					 xprt->sm_dr.recvsz,
+					 xprt->xa->max_recv_sge,
+					 xdr_rdma_chunk_in);
+
+		xdr_rdma_wait_read_cb(xprt, cbc, k, &rl(cbc->read_chunk)->target);
+		rpcrdma_dump_msg(IOQ_(TAILQ_FIRST(&cbc->workq.ioq_uv.uvqh.qh)),
+				 "call chunk", cmsg->rdma_xid);
+#endif
+		/* concatenate any additional buffers after the calling message,
+ * 		 * faking there is more call data in the calling buffer.
+ * 		 		 */
+		TAILQ_CONCAT(&cbc->holdq.ioq_uv.uvqh.qh,
+			     &cbc->workq.ioq_uv.uvqh.qh, q);
+		cbc->holdq.ioq_uv.uvqh.qcount += cbc->workq.ioq_uv.uvqh.qcount;
+		cbc->workq.ioq_uv.uvqh.qcount = 0;
+		cbc->read_chunk = (char *)cbc->read_chunk
+						+ sizeof(struct xdr_read_list);
+
+	}
 
 
 #if 0
@@ -716,6 +952,9 @@ svc_fabric_decode(struct svc_req *req)
 
 	/*这里是收包和解析的过程*/
 
+	__warnx(TIRPC_DEBUG_FLAG_ERROR,
+		"%s() NFS/FABRIC start decode() req %p, xdrs %p.", __func__, req, xdrs);
+
 	if (!xdr_fabric_svc_recv(global_cbc, 0)){
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
 			"NFS/FABRIC %s: xdr_rdma_svc_recv failed",
@@ -749,6 +988,8 @@ xdr_fabric_wrap_callback(struct rpc_rdma_cbc *cbc, RDMAXPRT *xprt)
 	/*
 	call svc_fabric_decode
 	*/
+	__warnx(TIRPC_DEBUG_FLAG_ERROR,
+		"%s() NFS/FABRIC wrap call back call to svc_request() cbc %p, xprt %p.", __func__, cbc, xprt);
 	return (int)svc_request(&xprt->sm_dr.xprt, xdrs);
 }
 
@@ -779,7 +1020,7 @@ rpc_fabric_thread(void *nullarg)
 	hints->domain_attr->mr_mode = FI_MR_LOCAL | FI_MR_ENDPOINT | OFI_MR_BASIC_MAP | FI_MR_RAW;
 	hints->tx_attr->op_flags = 0;
 
-	rc = start_server();
+	rc = start_server(xd);
 	__warnx(TIRPC_DEBUG_FLAG_ERROR,
 			"%s() NFS/FABRIC start server, rc=%d.", __func__, rc);
 	if (rc) {
@@ -787,10 +1028,10 @@ rpc_fabric_thread(void *nullarg)
 	}
 
 	/*复用同一个xprt, 里面申请内存*/
-	if (XPRT_DESTROYED != svc_fabric_rendezvous(&(xd->sm_dr.xprt)) )
+	if (XPRT_DESTROYED == svc_fabric_rendezvous(&(xd->sm_dr.xprt)) )
 	{
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
-			"%s() NFS/FABRIC  rendezvous success, rc=%d.", __func__,rc);
+			"%s() NFS/FABRIC  rendezvous failed, rc=%d.", __func__,rc);
 		return NULL;
 	}
 
@@ -803,9 +1044,10 @@ rpc_fabric_thread(void *nullarg)
 	//rc = post_recv(xd->buffer_aligned, xd->sm_dr.sendsz);
 	rc = post_recv(xd);
 	if (!rc) {
-		wait_recvcq();
+		rc = wait_recvcq();
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
-				"%s() NFS/FABRIC recv msg: \"%s\", rc %d.", __func__, xd->buffer_aligned, rc);
+		//		"%s() NFS/FABRIC recv msg: \"%s\", rc %d.", __func__, xd->buffer_aligned, rc);
+				"%s() NFS/FABRIC recv msg rc %d.", __func__, rc);
 		xdr_fabric_wrap_callback(global_cbc, xd);
 	}
 	else {
