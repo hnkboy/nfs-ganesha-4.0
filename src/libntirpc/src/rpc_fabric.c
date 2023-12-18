@@ -73,6 +73,15 @@
 #include "misc/abstract_atomic.h"
 #include "rpc_rdma.h"
 #include "svc_internal.h"
+#include "rpc_com.h"
+#include "misc/city.h"
+#include "svc_internal.h"
+#include "svc_xprt.h"
+#include "rpc_rdma.h"
+#include <rpc/svc_rqst.h>
+#include <rpc/svc_auth.h>
+
+
 
 #include <rdma/fi_errno.h>
 #include <rdma/fi_cm.h>
@@ -144,6 +153,52 @@ char g_rx_buf[BUF_SIZE];
 
 static struct xp_ops rpc_fabric_ops;
 
+static void
+svc_fabric_ops(SVCXPRT *xprt);
+
+/**
+ * rpc_rdma_setup_cbq
+ */
+static int
+rpc_fabric_setup_cbq(struct poolq_head *ioqh, u_int depth, u_int sge)
+{
+	struct rpc_rdma_cbc *cbc;
+
+	if (ioqh->qsize) {
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+			"%s() contexts already allocated",
+			__func__);
+		return EINVAL;
+	}
+	ioqh->qsize = sizeof(struct rpc_rdma_cbc)
+		    + sizeof(struct ibv_sge) * sge;
+	TAILQ_INIT(&ioqh->qh);
+
+	/* individual entries is less efficient than big array -- but uses
+	 * "standard" IOQ operations, xdr_ioq_destroy_pool(), and
+	 * debugging memory bounds checking of trailing ibv_sge array.
+	 */
+	while (depth--) {
+		cbc = mem_zalloc(ioqh->qsize);
+
+		xdr_ioq_setup(&cbc->workq);
+		xdr_ioq_setup(&cbc->holdq);
+
+		cbc->workq.ioq_uv.uvq_fetch =
+		cbc->holdq.ioq_uv.uvq_fetch = xdr_ioq_uv_fetch_nothing;
+		cbc->workq.xdrs[0].x_ops =
+		cbc->holdq.xdrs[0].x_ops = &xdr_ioq_ops;
+		cbc->workq.xdrs[0].x_op =
+		cbc->holdq.xdrs[0].x_op = XDR_FREE; /* catch setup errors */
+
+		cbc->workq.ioq_pool = ioqh;
+		//cbc->wpe.fun = rpc_rdma_worker_callback;
+
+		(ioqh->qcount)++;
+		TAILQ_INSERT_TAIL(&ioqh->qh, &cbc->workq.ioq_s, q);
+	}
+	return 0;
+}
 static void print_cq_error(struct fid_cq* cq) {
 	int ret;
 	struct fi_cq_err_entry cq_err;
@@ -163,7 +218,7 @@ static int post_recv(RDMAXPRT *xd)
 	struct poolq_entry *have =
 		xdr_ioq_uv_fetch(&xd->sm_dr.ioq, &xd->cbqh,
 				 "callq context", 1, IOQ_FLAG_NONE);
-	struct rpc_rdma_cbc *cbc; = (struct rpc_rdma_cbc *)(_IOQ(have));
+	struct rpc_rdma_cbc *cbc = (struct rpc_rdma_cbc *)(_IOQ(have));
 
 	have = xdr_ioq_uv_fetch(&cbc->workq, &xd->inbufs.uvqh,
 				"callq buffer", 1, IOQ_FLAG_NONE);
@@ -448,14 +503,13 @@ xdr_fabric_create(RDMAXPRT *xd)
 		b += xd->sm_dr.sendsz;
 	}
 	__warnx(TIRPC_DEBUG_FLAG_ERROR,
-	"%s() NFS/FABRIC buffer_aligned at %p, buffer_total %d,  rx depth %d, rx sendsz %d.
-	xd->xa->rq_depth %d, xd->xa->sq_depth %d, xd->xa->credits %d.",
+	"%s() NFS/FABRIC buffer_aligned at %p, buffer_total %d,  rx depth %d, rx sendsz %d. xd->xa->rq_depth %d, xd->xa->sq_depth %d, xd->xa->credits %d.",
 		__func__, xd->buffer_aligned, xd->buffer_total,  xd->xa->sq_depth, xd->sm_dr.sendsz,
 		xd->xa->rq_depth,
 		xd->xa->sq_depth,
 		xd->xa->credits);
 
-	rc = rpc_rdma_setup_cbq(&xd->cbqh,
+	rc = rpc_fabric_setup_cbq(&xd->cbqh,
 				xd->xa->rq_depth +
 				xd->xa->sq_depth,
 				xd->xa->credits);
@@ -481,10 +535,13 @@ xdr_fabric_create(RDMAXPRT *xd)
 enum xprt_stat
 svc_fabric_rendezvous(SVCXPRT *xprt)
 {
-	struct sockaddr_storage *ss;
-	RDMAXPRT *req_xd = RDMA_DR(REC_XPRT(xprt));
+	//SVCXPRT *xprt = 
+	//struct sockaddr_storage *ss;
+	//RDMAXPRT *req_xd = RDMA_DR(REC_XPRT(xprt));
 	//RDMAXPRT *xd = rpc_rdma_accept_wait(req_xd,
 	//			    __svc_params->idle_timeout);
+
+	RDMAXPRT *xd = (RDMAXPRT *)xprt;
 
 	if (!xd) {
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
@@ -654,7 +711,7 @@ static enum xprt_stat
 svc_fabric_decode(struct svc_req *req)
 {
 	XDR *xdrs = req->rq_xdrs;
-	struct xdr_ioq *holdq = XIOQ(xdrs);
+	//struct xdr_ioq *holdq = XIOQ(xdrs);
 
 
 	/*这里是收包和解析的过程*/
@@ -730,7 +787,7 @@ rpc_fabric_thread(void *nullarg)
 	}
 
 	/*复用同一个xprt, 里面申请内存*/
-	if (XPRT_DESTROYED != svc_fabric_rendezvous(xd->sm_dr.xprt) )
+	if (XPRT_DESTROYED != svc_fabric_rendezvous(&(xd->sm_dr.xprt)) )
 	{
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
 			"%s() NFS/FABRIC  rendezvous success, rc=%d.", __func__,rc);
@@ -749,7 +806,7 @@ rpc_fabric_thread(void *nullarg)
 		wait_recvcq();
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
 				"%s() NFS/FABRIC recv msg: \"%s\", rc %d.", __func__, xd->buffer_aligned, rc);
-		xdr_fabric_wrap_callback(global_cbc, xd->sm_dr.xprt);
+		xdr_fabric_wrap_callback(global_cbc, xd);
 	}
 	else {
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
@@ -982,7 +1039,7 @@ rpc_fabric_control(SVCXPRT *xprt, const u_int rq, void *in)
 	return (TRUE);
 }
 
-
+extern mutex_t ops_lock;
 static struct xp_ops rpc_fabric_ops = {
 	.xp_recv = svc_fabric_rendezvous,
 	.xp_stat = svc_rendezvous_stat,
@@ -1013,7 +1070,8 @@ svc_fabric_ops(SVCXPRT *xprt)
 		ops.xp_recv = NULL;
 		ops.xp_stat = NULL;
 		ops.xp_decode = svc_fabric_decode;
-		ops.xp_reply = svc_rdma_reply;
+		//ops.xp_reply = svc_rdma_reply;
+		ops.xp_reply = NULL;
 		ops.xp_checksum = NULL;		/* not used */
 		ops.xp_destroy = NULL,
 		ops.xp_control = NULL;
