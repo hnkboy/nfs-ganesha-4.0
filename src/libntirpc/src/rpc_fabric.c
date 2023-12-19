@@ -946,7 +946,7 @@ xdr_fabric_svc_recv(struct rpc_rdma_cbc *cbc, u_int32_t xid)
 						+ sizeof(struct xdr_read_list);
 
 	}
-	post_recv(global_xd);
+	//post_recv(global_xd);
 
 #if 0
 	RDMAXPRT *xprt;
@@ -1160,11 +1160,16 @@ rpc_fabric_thread(void *nullarg)
 				"%s() NFS/FABRIC  post recv faild, rc=%d.", __func__, rc);
 	}
 	while (1){
+	if (!rc) {
 		rc = wait_recvcq();
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
 		//		"%s() NFS/FABRIC recv msg: \"%s\", rc %d.", __func__, xd->buffer_aligned, rc);
 				"%s() NFS/FABRIC recv msg rc %d.", __func__, rc);
 		xdr_fabric_wrap_callback(global_cbc, xd);
+	} else {
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+				"%s() NFS/FABRIC  post recv faild, rc=%d.", __func__, rc);
+	}
 	}
 
 	return NULL;
@@ -1502,6 +1507,24 @@ xdr_fabric_svc_flushout(struct rpc_rdma_cbc *cbc)
 
 		rpcrdma_dump_msg(head_uv, "sreply head", msg->rm_xid);
 		rpcrdma_dump_msg(work_uv, "sreply body", msg->rm_xid);
+	{
+	char buf[1024];
+	memset(buf, 0, 1024);
+	uint32_t head_length = ioquv_length(head_uv);
+	uint32_t work_length = ioquv_length(work_uv);
+	memcpy(buf,head_uv->v.vio_head, head_length);
+	memcpy(buf + head_length, work_uv->v.vio_head, work_length);
+	//struct poolq_entry *have = TAILQ_FIRST(&cbc->workq.ioq_uv.uvqh.qh);
+	//uint32_t length = ioquv_length(IOQ_(have));
+	//void *addr = (void *)(uintptr_t)(IOQ_(have)->v.vio_head);
+	__warnx(TIRPC_DEBUG_FLAG_ERROR,
+			"%s() NFS/FABRIC addr %p, size %d.", __func__, buf, head_length + work_length);
+	post_send(buf, (ssize_t)head_length + work_length);
+	wait_sendcq();
+	__warnx(TIRPC_DEBUG_FLAG_ERROR,
+			"%s() NFS/FABRIC send success.", __func__);
+
+	}
 	} else {
 		uint32_t i = 0;
 		uint32_t n = ntohl(reply_array->elements);
@@ -1570,18 +1593,6 @@ xdr_fabric_svc_flushout(struct rpc_rdma_cbc *cbc)
 	(cbc->workq.ioq_uv.uvqh.qcount)++;
 	TAILQ_INSERT_HEAD(&cbc->workq.ioq_uv.uvqh.qh, &head_uv->uvq, q);
 
-	{
-	struct poolq_entry *have = TAILQ_FIRST(&cbc->workq.ioq_uv.uvqh.qh);
-	uint32_t length = ioquv_length(IOQ_(have));
-	void *addr = (void *)(uintptr_t)(IOQ_(have)->v.vio_head);
-	__warnx(TIRPC_DEBUG_FLAG_ERROR,
-			"%s() NFS/FABRIC addr %p, size %d.", __func__, addr, length);
-	post_send(addr, (ssize_t)length);
-	wait_sendcq();
-	__warnx(TIRPC_DEBUG_FLAG_ERROR,
-			"%s() NFS/FABRIC send success.", __func__);
-
-	}
 
 
 
