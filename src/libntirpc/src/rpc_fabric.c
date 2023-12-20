@@ -331,7 +331,36 @@ static int wait_sendcq(void)
 	//		"%s() NFS/FABRIC cq_read %p, base %p.", __func__, cbc, IOQ_(have)->v.vio_head);
 	return ret;
 }
-
+static void printf_finfo(struct fi_info *info, char *args)
+{
+	__warnx(TIRPC_DEBUG_FLAG_ERROR,
+	"%s() NFS/FABRIC\n %s-1 info: \ncaps:0x%x;\nmode:0x%x;", 
+	__func__, 
+	args,
+	info->caps,
+	info->mode);
+	__warnx(TIRPC_DEBUG_FLAG_ERROR,
+	"%s() NFS/FABRIC\n %s-2 info: txattr: \ncaps:0x%x;\nmode:0x%x;\nop_flags:0x%x;\nsize:0x%x;\niov_limit:0x%x;\nrma_iov_limit:0x%x;\ntclass:0x%x", 
+	__func__, 
+	args,
+	info->tx_attr->caps,
+	info->tx_attr->mode,
+	info->tx_attr->op_flags,
+	info->tx_attr->size, 
+	info->tx_attr->iov_limit, 
+	info->tx_attr->rma_iov_limit,
+	info->tx_attr->tclass);
+	__warnx(TIRPC_DEBUG_FLAG_ERROR,
+	"%s() NFS/FABRIC\n %s-3 info: rxattr: \ncaps:0x%x;\nmode:0x%x;\nop_flags:0x%x;\nsize:0x%x;\niov_limit:0x%x;\nrma_iov_limit:NA;\ntclass:NA", 
+	__func__, 
+	args,
+	info->rx_attr->caps,
+	info->rx_attr->mode,
+	info->rx_attr->op_flags,
+	info->rx_attr->size, 
+	info->rx_attr->iov_limit);
+	return;
+}
 
 static int start_server(RDMAXPRT *xd)
 {
@@ -344,6 +373,11 @@ static int start_server(RDMAXPRT *xd)
 		printf("fi_getinfo error (%d)\n", ret);
 		return ret;
 	}
+
+	printf_finfo(hints, "init_hints");
+	printf_finfo(hints, "get_hints");
+	
+
 	ret = fi_fabric(fi_pep->fabric_attr, &fabric, NULL); // 打开fabric, 初始化任何资源前需要打开fabric
 	if (ret) {
 		printf("fi_fabric error (%d)\n", ret);
@@ -389,6 +423,8 @@ static int server_connect(RDMAXPRT *xd)
 			goto err;
 	}
 	fi = entry.info;                            // info赋值到fi,后续操作的fi都是这个连接后的
+	printf_finfo(fi, "get_client_hints");
+
 	printf("fi_eq_sread: %d\n", ret);
 	ret = fi_domain(fabric, fi, &domain, NULL); // domain域用于将资源分组, 可基于域来做管理
 	if (ret) {
@@ -445,7 +481,7 @@ static int server_connect(RDMAXPRT *xd)
 
 
 	//mr = &no_mr;
-	ret = fi_mr_reg(domain, xd->buffer_aligned, xd->buffer_total, FI_RECV,
+	ret = fi_mr_reg(domain, xd->buffer_aligned, xd->buffer_total, FI_RECV | FI_SEND,
 			0, MR_KEY, 0, &mr, NULL);
 	if (ret) {
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
@@ -1561,7 +1597,21 @@ xdr_fabric_write_cb(RDMAXPRT *xprt, struct rpc_rdma_cbc *cbc, int sge,
 			offset += send_iov[i].iov_len;	
 			memcpy(send_iov[0].iov_base + offset , send_iov[i+1].iov_base,  send_iov[i+1].iov_len);
 		}
-		ret = fi_send(ep, send_iov[0].iov_base, totalsize, NULL, remote_fi_addr, NULL);
+		//ret = fi_send(ep, send_iov[0].iov_base, totalsize, NULL, remote_fi_addr, NULL);
+
+		do { 
+			ret = fi_send(ep, send_iov[0].iov_base, totalsize, NULL, remote_fi_addr, NULL); 
+			if (ret && ret != -FI_EAGAIN) {
+				FA_PRINT("error fi_send %d\n", ret); 
+				return ret;
+			}
+			if (ret == -FI_EAGAIN) {
+				(void) fi_cq_read(txcq, NULL, 0);
+				FA_PRINT("error fi_send size %d, ret:%d\n", totalsize, ret);
+				sleep(1);
+			}
+		} while (ret);
+
 	#endif
 		if (ret == 0){
 			wait_sendcq();
