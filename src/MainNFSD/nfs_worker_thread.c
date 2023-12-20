@@ -1680,6 +1680,14 @@ enum xprt_stat nfs_rpc_valid_NFS(struct svc_req *req)
 			container_of(req, struct nfs_request, svc);
 	int lo_vers;
 	int hi_vers;
+
+	LogEvent(COMPONENT_DISPATCH,
+		     " NFS/FABRIC req %p,  protocol Version %" PRIu32
+		     " for Program number %" PRIu32,
+			 req,
+		     req->rq_msg.cb_vers,
+		     req->rq_msg.cb_prog);
+
 #ifdef USE_LTTNG
 	SVCXPRT *xprt = reqdata->svc.rq_xprt;
 

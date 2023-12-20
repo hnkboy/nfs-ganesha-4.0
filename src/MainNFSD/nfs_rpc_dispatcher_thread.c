@@ -546,7 +546,7 @@ struct rpc_rdma_attr rpc_rdma_xa = {
 	.destroy_on_disconnect = true,
 	.use_srq = false,
 };
-
+#if 0
 static enum xprt_stat nfs_rpc_dispatch_RDMA(SVCXPRT *xprt)
 {
 	LogFullDebug(COMPONENT_DISPATCH,
@@ -555,6 +555,7 @@ static enum xprt_stat nfs_rpc_dispatch_RDMA(SVCXPRT *xprt)
 	xprt->xp_dispatch.process_cb = nfs_rpc_valid_NFS;
 	return SVC_STAT(xprt->xp_parent);
 }
+#endif
 
 void Create_RDMA(protos prot)
 {
@@ -567,7 +568,8 @@ void Create_RDMA(protos prot)
 		LogFatal(COMPONENT_DISPATCH, "Cannot allocate RPC/%s SVCXPRT",
 			 tags[prot]);
 
-	tcp_xprt[prot]->xp_dispatch.rendezvous_cb = nfs_rpc_dispatch_RDMA;
+	//tcp_xprt[prot]->xp_dispatch.rendezvous_cb = nfs_rpc_dispatch_RDMA;
+	tcp_xprt[prot]->xp_dispatch.process_cb = nfs_rpc_valid_NFS;
 
 	/* Hook xp_free_user_data (finalize/free private data) */
 	(void)SVC_CONTROL(tcp_xprt[prot], SVCSET_XP_FREE_USER_DATA,

@@ -85,6 +85,7 @@
 
 #include <rdma/fi_errno.h>
 #include <rdma/fi_cm.h>
+#include <rdma/fi_rma.h>
 #include <assert.h>
 
 char *dst_addr = NULL;
@@ -152,10 +153,8 @@ char g_rx_buf[BUF_SIZE];
 	__warnx(TIRPC_DEBUG_FLAG_ERROR, \
 	"%s() NFS/FABRIC  "fmt"\n", __func__, ##__VA_ARGS__);
 
-extern struct xp_ops rpc_fabric_ops;
+struct xp_ops rpc_fabric_ops;
 
-static void
-svc_fabric_ops(SVCXPRT *xprt);
 
 /**
  * rpc_rdma_setup_cbq
@@ -240,7 +239,7 @@ static int post_recv(RDMAXPRT *xd)
 			"%s() NFS/FABRIC cbc %p, base %p.", __func__, cbc, IOQ_(have)->v.vio_head);
 	do {
 		ret = fi_recv(ep, IOQ_(have)->v.vio_head,
-			xd->sm_dr.recvsz, mr, remote_fi_addr, NULL);
+			xd->sm_dr.recvsz, mr, remote_fi_addr, cbc);
 		if (ret && ret != -FI_EAGAIN) {
 			FA_PRINT("error fi_recv %d\n", ret);
 			return ret;
@@ -274,10 +273,13 @@ static int wait_recvcq(void)
 	else if (comp.flags & FI_SEND)
 		printf("My message got sent!\n");
 	ret = comp.len;
+	global_cbc = comp.op_context;
+	__warnx(TIRPC_DEBUG_FLAG_ERROR,
+			"%s() NFS/FABRIC comp.op_context %p.", __func__, comp.op_context);
 	return ret;
 }
 
-
+#if 0
 /* Post a send buffer. This call does not ensure a message has been sent, just that
  * a buffer has been submitted to OFI to be sent. Unlike a receive buffer, a send
  * needs a valid fi_addr as input to tell the provider where to send the message.
@@ -302,7 +304,7 @@ static int post_send(void *buf, ssize_t size)
 
         return 0;
 }
-
+#endif
 
 static int wait_sendcq(void)
 {
@@ -325,6 +327,8 @@ static int wait_sendcq(void)
 	else if (comp.flags & FI_SEND)
 		printf("My message got sent!\n");
 	ret = comp.len;
+	//__warnx(TIRPC_DEBUG_FLAG_ERROR,
+	//		"%s() NFS/FABRIC cq_read %p, base %p.", __func__, cbc, IOQ_(have)->v.vio_head);
 	return ret;
 }
 
@@ -623,7 +627,6 @@ svc_fabric_rendezvous(SVCXPRT *xprt)
 		xd->sm_dr.xprt.xp_remote.nb.len);
 #endif
 
-	svc_fabric_ops(&xd->sm_dr.xprt);
 
 #if 0
 	if (xdr_rdma_create(xd)) {
@@ -912,8 +915,8 @@ xdr_fabric_svc_recv(struct rpc_rdma_cbc *cbc, u_int32_t xid)
 //	uint32_t k;
 //	uint32_t l;
 
-	while (xrl(cbc->read_chunk)->present != 0
-	    && xrl(cbc->read_chunk)->position == 0) {
+	while (((struct xdr_read_list*)(cbc->read_chunk))->present != 0){
+//	    && xrl(cbc->read_chunk)->position == 0) {
 
 //		l = ntohl(xrl(cbc->read_chunk)->target.length);
 //
@@ -1083,7 +1086,10 @@ svc_fabric_decode(struct svc_req *req)
 	req->rq_xprt->xp_parent = req->rq_xprt;
 	req->rq_xprt->xp_ops = &rpc_fabric_ops;
 	/*nfs_rpc_dispatch_RDMA 这个已经在create_rdma的时候注册过了*/
-	(void)req->rq_xprt->xp_dispatch.rendezvous_cb(req->rq_xprt);
+	//(void)req->rq_xprt->xp_dispatch.rendezvous_cb(req->rq_xprt);
+	__warnx(TIRPC_DEBUG_FLAG_ERROR,
+			"NFS/FABRIC %s: calll dispatch processcb , req %p",
+			__func__,req);
 	return req->rq_xprt->xp_dispatch.process_cb(req);
 }
 
@@ -1114,8 +1120,7 @@ rpc_fabric_thread(void *nullarg)
 	hints = fi_allocinfo();
 	if (!hints)
 		return NULL;
-
-	//dst_addr = argv[1];
+	#if 1
 	hints->ep_attr->type = FI_EP_MSG; // 可靠数据报端点, 类似socket, 但无须执行listen/connect/accept
 	hints->caps = FI_MSG;
  	hints->fabric_attr->prov_name = "verbs";
@@ -1125,6 +1130,20 @@ rpc_fabric_thread(void *nullarg)
 	hints->domain_attr->threading = FI_THREAD_DOMAIN;
 	hints->domain_attr->mr_mode = FI_MR_LOCAL | FI_MR_ENDPOINT | OFI_MR_BASIC_MAP | FI_MR_RAW;
 	hints->tx_attr->op_flags = 0;
+	#else
+
+	hints->ep_attr->type = FI_EP_MSG; // 可靠数据报端点, 类似socket, 但无须执行listen/connect/accept
+	hints->caps = FI_MSG | FI_RMA;
+ 	hints->fabric_attr->prov_name = "verbs";
+	hints->addr_format = 0;
+	hints->tx_attr->op_flags = FI_DELIVERY_COMPLETE;
+	hints->tx_attr->tclass = 513 | FI_TC_BULK_DATA; 
+	hints->domain_attr->threading = FI_THREAD_DOMAIN;
+	hints->domain_attr->mr_mode = FI_MR_LOCAL | FI_MR_ENDPOINT | OFI_MR_BASIC_MAP | FI_MR_RAW ;
+	hints->domain_attr->resource_mgmt = FI_RM_ENABLED;
+	hints->tx_attr->op_flags = 0;
+	hints->mode = FI_CONTEXT;
+	#endif
 
 	rc = start_server(xd);
 	__warnx(TIRPC_DEBUG_FLAG_ERROR,
@@ -1152,24 +1171,26 @@ rpc_fabric_thread(void *nullarg)
 	if (!rc) {
 		rc = wait_recvcq();
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
-		//		"%s() NFS/FABRIC recv msg: \"%s\", rc %d.", __func__, xd->buffer_aligned, rc);
 				"%s() NFS/FABRIC recv msg rc %d.", __func__, rc);
+		//		"%s() NFS/FABRIC recv msg: \"%s\", rc %d.", __func__, xd->buffer_aligned, rc);
 		xdr_fabric_wrap_callback(global_cbc, xd);
 	} else {
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
 				"%s() NFS/FABRIC  post recv faild, rc=%d.", __func__, rc);
 	}
 	while (1){
-	if (!rc) {
-		rc = wait_recvcq();
-		__warnx(TIRPC_DEBUG_FLAG_ERROR,
-		//		"%s() NFS/FABRIC recv msg: \"%s\", rc %d.", __func__, xd->buffer_aligned, rc);
-				"%s() NFS/FABRIC recv msg rc %d.", __func__, rc);
-		xdr_fabric_wrap_callback(global_cbc, xd);
-	} else {
-		__warnx(TIRPC_DEBUG_FLAG_ERROR,
-				"%s() NFS/FABRIC  post recv faild, rc=%d.", __func__, rc);
-	}
+			rc = post_recv(xd);
+			if (!rc) {
+				rc = wait_recvcq();
+				__warnx(TIRPC_DEBUG_FLAG_ERROR,
+				//		"%s() NFS/FABRIC recv msg: \"%s\", rc %d.", __func__, xd->buffer_aligned, rc);
+						"%s() NFS/FABRIC recv msg rc %d.", __func__, rc);
+				xdr_fabric_wrap_callback(global_cbc, xd);
+			} else {
+				__warnx(TIRPC_DEBUG_FLAG_ERROR,
+						"%s() NFS/FABRIC  post recv faild, rc=%d.", __func__, rc);
+				break;
+			}
 	}
 
 	return NULL;
@@ -1410,18 +1431,141 @@ svc_fabric_stat(SVCXPRT *xprt)
 	return (XPRT_IDLE);
 }
 static enum xprt_stat  svc_fabric_reply(struct svc_req *req);
+
 extern mutex_t ops_lock;
 struct xp_ops rpc_fabric_ops = {
 	.xp_recv = svc_fabric_rendezvous,
 	.xp_stat = svc_fabric_stat,
-	.xp_decode = (svc_req_fun_t)abort,
 	.xp_reply = svc_fabric_reply,
+	.xp_decode = svc_fabric_decode,
 	.xp_checksum = NULL,		/* not used */
 	.xp_unlink = rpc_fabric_unlink_it,
 	.xp_destroy = rpc_fabric_destroy_it,
 	.xp_control = rpc_fabric_control,
 	.xp_free_user_data = NULL,	/* no default */
 };
+static int
+xdr_fabric_write_cb(RDMAXPRT *xprt, struct rpc_rdma_cbc *cbc, int sge,
+		      struct xdr_rdma_segment *rs)
+{
+	int ret  = 0; 
+	int i = 0;
+	uint32_t totalsize = 0;	
+	struct poolq_entry *have = TAILQ_FIRST(&cbc->workq.ioq_uv.uvqh.qh);
+
+	struct iovec send_iov[4];
+
+	
+	if (have == NULL)
+		return 0;
+
+	while (have && i < sge) {
+		//struct ibv_mr *mr = IOQ_(have)->u.uio_p2;
+		uint32_t length = ioquv_length(IOQ_(have));
+		cbc->sg_list[i].addr = (uintptr_t)(IOQ_(have)->v.vio_head);
+		cbc->sg_list[i].length = length;
+		//cbc->sg_list[i++].lkey = mr->lkey;
+		//
+		send_iov[i].iov_base = (void *)(IOQ_(have)->v.vio_head);	
+		send_iov[i].iov_len = length;
+		
+		totalsize += length;
+		have = TAILQ_NEXT(have, q);
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+				"%s() NFS/FABRIC sg[%d] addr %p length %d.", __func__, 
+				i, cbc->sg_list[i].addr, cbc->sg_list[i].length);	
+		i ++;
+
+	}
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+				"%s() NFS/FABRIC totalsize %d. sge %d.", __func__, 
+			totalsize, sge);	
+	if (totalsize == 0)
+		return 0;
+
+	if (rs != NULL) {
+
+		uint64_t	remote_addr = decode_hyper(&rs->offset);
+		uint32_t	rkey =  ntohl(rs->handle);
+		uint32_t    length = ntohl(rs->length);
+	#if 0
+		uint64_t	remote_cq_data = 0;
+		struct fi_context *ctx = NULL;
+
+		struct fi_msg_rma rma_msg;
+		struct fi_rma_iov rma_iov;
+
+		rma_iov.addr = remote_addr;
+		rma_iov.len = length;
+		rma_iov.key = rkey;
+		
+		rma_msg.msg_iov = send_iov;
+		rma_msg.desc = NULL;
+		rma_msg.iov_count = sge;
+		rma_msg.addr = remote_fi_addr;
+		rma_msg.rma_iov = &rma_iov;
+		rma_msg.rma_iov_count = 1;
+		rma_msg.context = ctx;
+		rma_msg.data = remote_cq_data;
+		ret = fi_writemsg(ep, &rma_msg, 0);
+	#else
+		int i = 0,offset = 0;
+		for (; i<sge-1; i++) {
+			offset += send_iov[i].iov_len;	
+			memcpy(send_iov[0].iov_base + offset , send_iov[i+1].iov_base,  send_iov[i+1].iov_len);
+		}
+
+		//ret = fi_write(ep, &rma_msg, 0);
+		ret = fi_write(ep, send_iov[0].iov_base, totalsize, mr_desc, remote_fi_addr, remote_addr, rkey, NULL);
+	#endif	
+		if (ret == 0){
+			wait_sendcq();
+			__warnx(TIRPC_DEBUG_FLAG_ERROR,
+					"%s() NFS/FABRIC write success.", __func__);
+		}else {
+		            __warnx(TIRPC_DEBUG_FLAG_ERROR,
+                    "%s() NFS/FABRIC write failed.", __func__);
+		}
+
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+					"%s() NFS/FABRIC rs remoteaddr %d rkey %d length %d.", __func__,
+					remote_addr, rkey, length);
+
+	}else {
+	#if 0
+		struct fi_context tx_ctx;
+		struct fi_msg msg;
+
+		msg.msg_iov = send_iov;
+		msg.iov_count = sge;
+		msg.addr = remote_fi_addr;
+		msg.context = &tx_ctx;
+		msg.data = 0;
+		msg.desc = &mr_desc;
+
+	#else
+		int i = 0,offset = 0;
+		for (; i<sge-1; i++) {
+			offset += send_iov[i].iov_len;	
+			memcpy(send_iov[0].iov_base + offset , send_iov[i+1].iov_base,  send_iov[i+1].iov_len);
+		}
+		ret = fi_send(ep, send_iov[0].iov_base, totalsize, NULL, remote_fi_addr, NULL);
+	#endif
+		if (ret == 0){
+			wait_sendcq();
+			__warnx(TIRPC_DEBUG_FLAG_ERROR,
+					"%s() NFS/FABRIC send success. totalsize %d.", __func__, totalsize);
+		}else {
+		            __warnx(TIRPC_DEBUG_FLAG_ERROR,
+                    "%s() NFS/FABRIC send failed.", __func__);
+		}
+		
+	}
+	
+	return ret;
+}
+
+
 #define x_xprt(xdrs) ((RDMAXPRT *)((xdrs)->x_lib[1]))
 bool
 xdr_fabric_svc_flushout(struct rpc_rdma_cbc *cbc)
@@ -1507,24 +1651,6 @@ xdr_fabric_svc_flushout(struct rpc_rdma_cbc *cbc)
 
 		rpcrdma_dump_msg(head_uv, "sreply head", msg->rm_xid);
 		rpcrdma_dump_msg(work_uv, "sreply body", msg->rm_xid);
-	{
-	char buf[1024];
-	memset(buf, 0, 1024);
-	uint32_t head_length = ioquv_length(head_uv);
-	uint32_t work_length = ioquv_length(work_uv);
-	memcpy(buf,head_uv->v.vio_head, head_length);
-	memcpy(buf + head_length, work_uv->v.vio_head, work_length);
-	//struct poolq_entry *have = TAILQ_FIRST(&cbc->workq.ioq_uv.uvqh.qh);
-	//uint32_t length = ioquv_length(IOQ_(have));
-	//void *addr = (void *)(uintptr_t)(IOQ_(have)->v.vio_head);
-	__warnx(TIRPC_DEBUG_FLAG_ERROR,
-			"%s() NFS/FABRIC addr %p, size %d.", __func__, buf, head_length + work_length);
-	post_send(buf, (ssize_t)head_length + work_length);
-	wait_sendcq();
-	__warnx(TIRPC_DEBUG_FLAG_ERROR,
-			"%s() NFS/FABRIC send success.", __func__);
-
-	}
 	} else {
 		uint32_t i = 0;
 		uint32_t n = ntohl(reply_array->elements);
@@ -1558,7 +1684,6 @@ xdr_fabric_svc_flushout(struct rpc_rdma_cbc *cbc)
 					xprt->xa->max_send_sge);
 				k = xprt->xa->max_send_sge;
 			}
-
 			*w_seg = *c_seg;
 
 			/* sometimes, back-to-back buffers could be sent
@@ -1566,8 +1691,10 @@ xdr_fabric_svc_flushout(struct rpc_rdma_cbc *cbc)
 			 * other events eventually scramble the buffers
 			 * enough that there's no gain in efficiency.
 			 */
-			//xdr_rdma_wait_write_cb(xprt, cbc, k, w_seg);
+			xdr_fabric_write_cb(xprt, cbc, k, w_seg);
 
+			__warnx(TIRPC_DEBUG_FLAG_ERROR,
+					"%s() NFS/FABRIC reply array sge:%d.", __func__, k);
 			while (0 < k--) {
 				struct poolq_entry *have =
 					TAILQ_FIRST(&cbc->workq.ioq_uv.uvqh.qh);
@@ -1579,12 +1706,16 @@ xdr_fabric_svc_flushout(struct rpc_rdma_cbc *cbc)
 						 msg->rm_xid);
 				xdr_ioq_uv_release(IOQ_(have));
 			}
+
 		}
+//		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+//					"%s() NFS/FABRIC reply array %d.%d,", __func__, n, i);
 		w_array->elements = htonl(i);
 
 		head_uv->v.vio_tail = head_uv->v.vio_head
 					+ xdr_rdma_header_length(rmsg);
 		rpcrdma_dump_msg(head_uv, "sreply head", msg->rm_xid);
+
 	}
 
 	/* actual send, callback will take care of cleanup */
@@ -1592,12 +1723,31 @@ xdr_fabric_svc_flushout(struct rpc_rdma_cbc *cbc)
 	(cbc->holdq.ioq_uv.uvqh.qcount)--;
 	(cbc->workq.ioq_uv.uvqh.qcount)++;
 	TAILQ_INSERT_HEAD(&cbc->workq.ioq_uv.uvqh.qh, &head_uv->uvq, q);
+	
+	__warnx(TIRPC_DEBUG_FLAG_ERROR,
+		"%s() NFS/FABRIC reply array workq qcount :%d, reply present %d.", __func__, cbc->workq.ioq_uv.uvqh.qcount, reply_array->present);
+	xdr_fabric_write_cb(xprt, cbc, cbc->workq.ioq_uv.uvqh.qcount, NULL);
 
+#if 0
+		{
+			char buf[1024];
+			memset(buf, 0, 1024);
+			uint32_t head_length = ioquv_length(head_uv);
+			uint32_t work_length = ioquv_length(work_uv);
+			memcpy(buf,head_uv->v.vio_head, head_length);
+			memcpy(buf + head_length, work_uv->v.vio_head, work_length);
+			//struct poolq_entry *have = TAILQ_FIRST(&cbc->workq.ioq_uv.uvqh.qh);
+			//uint32_t length = ioquv_length(IOQ_(have));
+			//void *addr = (void *)(uintptr_t)(IOQ_(have)->v.vio_head);
+			__warnx(TIRPC_DEBUG_FLAG_ERROR,
+					"%s() NFS/FABRIC addr %p, size %d.", __func__, buf, head_length + work_length);
+			post_send(buf, (ssize_t)head_length + work_length);
+			wait_sendcq();
+			__warnx(TIRPC_DEBUG_FLAG_ERROR,
+					"%s() NFS/FABRIC send success.", __func__);
 
-
-
-
-
+		}
+#endif 
 
 	/* free the old inbuf we only kept for header */
 	xdr_ioq_uv_release(cbc->call_uv);
@@ -1653,36 +1803,4 @@ svc_fabric_reply(struct svc_req *req)
 
 	return (XPRT_IDLE);
 }
-
-
-static struct xp_ops ops;
-static void
-svc_fabric_ops(SVCXPRT *xprt)
-{
-
-	/* VARIABLES PROTECTED BY ops_lock: ops, xp_type */
-
-	mutex_lock(&ops_lock);
-
-	/* Fill in type of service */
-	xprt->xp_type = XPRT_RDMA;
-
-	if (ops.xp_recv == NULL) {
-		ops.xp_recv = NULL;
-		ops.xp_stat = NULL;
-		ops.xp_decode = svc_fabric_decode;
-		ops.xp_reply = NULL;
-		ops.xp_checksum = NULL;		/* not used */
-		ops.xp_destroy = NULL,
-		ops.xp_control = NULL;
-		ops.xp_free_user_data = NULL;	/* no default */
-	}
-	xprt->xp_ops = &ops;
-
-	mutex_unlock(&ops_lock);
-}
-
-
-
-
 
