@@ -1166,6 +1166,18 @@ rpc_fabric_thread(void *nullarg)
 				"%s() NFS/FABRIC start server fiald, rc=%d.", __func__, rc);
 		return NULL;
 	}
+	struct sockaddr_storage ss;
+	size_t tmplen = sizeof(struct sockaddr_storage);
+	
+	fi_getname(&ep->fid, &ss, &tmplen);
+
+	__rpc_address_setup(&xd->sm_dr.xprt.xp_local);
+	memcpy(&xd->sm_dr.xprt.xp_local.nb.buf, &ss,
+		xd->sm_dr.xprt.xp_local.nb.len);
+
+	__rpc_address_setup(&xd->sm_dr.xprt.xp_remote);
+	memcpy(&xd->sm_dr.xprt.xp_remote.nb.buf, &ss,
+		xd->sm_dr.xprt.xp_remote.nb.len);	
 
 	rc = post_recv(xd);
 	if (!rc) {
@@ -1480,8 +1492,8 @@ xdr_fabric_write_cb(RDMAXPRT *xprt, struct rpc_rdma_cbc *cbc, int sge,
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
 				"%s() NFS/FABRIC totalsize %d. sge %d.", __func__, 
 			totalsize, sge);	
-	if (totalsize == 0)
-		return 0;
+	//if (totalsize == 0)
+	//	return 0;
 
 	if (rs != NULL) {
 
