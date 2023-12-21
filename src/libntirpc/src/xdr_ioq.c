@@ -74,6 +74,7 @@ xdr_ioq_uv_create(size_t size, u_int uio_flags)
 		uv->v.vio_head = uv->v.vio_base;
 		uv->v.vio_tail = uv->v.vio_base;
 		uv->v.vio_wrap = uv->v.vio_base + size;
+		uv->v.vio_rawlen = size;
 		/* ensure not wrapping to zero */
 		assert(uv->v.vio_base < uv->v.vio_wrap);
 	}
@@ -194,6 +195,10 @@ xdr_ioq_uv_release(struct xdr_ioq_uv *uv)
 		if (uv->u.uio_release) {
 			/* handle both xdr_ioq_uv and vio */
 			uv->u.uio_release(&uv->u, UIO_FLAG_NONE);
+		} else if (uv->u.uio_flags & UIO_FLAG_KEEP) {
+
+			mem_free(uv, sizeof(*uv));	
+			__warnx(TIRPC_DEBUG_FLAG_XDR, "%s() xdr_ioq_vn is not free. \n", __func__);
 		} else if (uv->u.uio_flags & UIO_FLAG_REFER) {
 			/* not optional in this case! */
 			__warnx(TIRPC_DEBUG_FLAG_XDR, "Call uio_release");
@@ -201,7 +206,13 @@ xdr_ioq_uv_release(struct xdr_ioq_uv *uv)
 						     UIO_FLAG_NONE);
 			mem_free(uv, sizeof(*uv));
 		} else if (uv->u.uio_flags & UIO_FLAG_FREE) {
-			free_buffer(uv->v.vio_base, ioquv_size(uv));
+			//free_buffer(uv->v.vio_base, ioquv_size(uv));
+			if (uv->v.vio_rawlen != 0) {
+				free_buffer(uv->v.vio_base, uv->v.vio_rawlen);
+			}
+			else {
+				free_buffer(uv->v.vio_base, ioquv_size(uv));
+			}
 			mem_free(uv, sizeof(*uv));
 		} else if (uv->u.uio_flags & UIO_FLAG_BUFQ) {
 			uv->u.uio_references = 1;	/* keeping one */
@@ -599,18 +610,24 @@ xdr_ioq_putbufs(XDR *xdrs, xdr_uio *uio, u_int flags)
 			xdr_ioq_uv_update(XIOQ(xdrs), uv);
 
 		v = &(uio->uio_vio[ix]);
-		uv->u.uio_flags = UIO_FLAG_REFER;
-		uv->v = *v;
+		if (uv->u.uio_flags & UIO_FLAG_BUFQ) {
+			ssize_t delta;
+			delta = (uintptr_t)v->vio_wrap - (uintptr_t)v->vio_base;
+			memcpy(uv->v.vio_base, v->vio_base, delta);
+			xdrs->x_data += delta;	
+		} else {
+			uv->u.uio_flags = UIO_FLAG_REFER;
+			uv->v = *v;
 
-		/* save original buffer sequence for rele */
-		uv->u.uio_refer = uio;
-		(uio->uio_references)++;
+			/* save original buffer sequence for rele */
+			uv->u.uio_refer = uio;
+			(uio->uio_references)++;
 
-		/* Now update the XDR position */
-		xdrs->x_data = uv->v.vio_tail;
-		xdrs->x_base = &uv->v;
-		xdrs->x_v = uv->v;
-
+			/* Now update the XDR position */
+			xdrs->x_data = uv->v.vio_tail;
+			xdrs->x_base = &uv->v;
+			xdrs->x_v = uv->v;
+		}
 		__warnx(TIRPC_DEBUG_FLAG_XDR,
 			"%s After putbufs Examining xdr_ioq_uv %p (base %p head %p tail %p wrap %p len %lu full %lu) pos %lu",
 			__func__, uv, uv->v.vio_base, uv->v.vio_head,
@@ -761,7 +778,49 @@ xdr_ioq_release(struct poolq_head *ioqh)
 	}
 	assert(ioqh->qcount == 0);
 }
+void
+xdr_ioq_release_force(struct poolq_head *ioqh)
+{
+	struct poolq_entry *have = TAILQ_FIRST(&ioqh->qh);
+	/*release queued buffers*/
+	while (have) {
+		struct poolq_entry *next = TAILQ_NEXT(have, q);
+		TAILQ_REMOVE(&ioqh->qh, have, q);
+		(ioqh->qcount)--;
+		if (have->qflags & IOQ_FLAG_SEGMENT) {
+			xdr_ioq_destroy(_IOQ(have), have->qsize);
+		}
+		else {
+			IOQ_(have)->u.uio_flags &= ~UIO_FLAG_BUFQ;
+			IOQ_(have)->u.uio_flags |= UIO_FLAG_KEEP;
+			xdr_ioq_uv_release(IOQ_(have));
+		}
+		have = next;
+	}
+	assert(ioqh->qcount == 0);
 
+}
+void
+xdr_ioq_destroy_force(struct xdr_ioq *xioq, size_t qsize)
+{
+	
+	__warnx(TIRPC_DEBUG_FLAG_XDR,
+		"%s() xioq %p",
+		__func__, xioq);
+
+	xdr_ioq_release_force(&xioq->ioq_uv.uvqh);
+
+	if (xioq->ioq_pool) {
+		xdr_ioq_uv_recycle(xioq->ioq_pool, &xioq->ioq_s);
+		return;
+	}
+	poolq_head_destroy(&xioq->ioq_uv.uvqh);
+	pthread_cond_destroy(&xioq->ioq_cond);
+
+	if (xioq->xdrs[0].x_flags & XDR_FLAG_FREE) {
+		mem_free(xioq, qsize);
+	}
+}
 void
 xdr_ioq_destroy(struct xdr_ioq *xioq, size_t qsize)
 {
@@ -793,7 +852,9 @@ void
 xdr_ioq_destroy_pool(struct poolq_head *ioqh)
 {
 	struct poolq_entry *have = TAILQ_FIRST(&ioqh->qh);
-
+	__warnx(TIRPC_DEBUG_FLAG_XDR, 
+			"JERRY_IN_IOQ %s() ioqh %p, ioqh->qcount %d, have %p\n", 
+			__func__, ioqh, ioqh->qcount, have);
 	while (have) {
 		struct poolq_entry *next = TAILQ_NEXT(have, q);
 

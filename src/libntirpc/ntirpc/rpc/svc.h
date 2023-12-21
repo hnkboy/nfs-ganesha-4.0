@@ -254,6 +254,7 @@ struct svc_xprt {
 
 	struct rpc_address xp_local;	/* local address, length, port */
 	struct rpc_address xp_remote;	/* remote address, length, port */
+	struct rpc_address xp_proxy;	/* proxy address, length, port */
 
 #if defined(HAVE_BLKIN)
 	/* blkin tracing */
@@ -480,6 +481,9 @@ static inline void svc_destroy_it(SVCXPRT *xprt,
 
 	/* unlink before dropping last ref */
 	(*(xprt)->xp_ops->xp_unlink)(xprt, flags, tag, line);
+	if( *(xprt)->xp_ops->xp_unlink != NULL ) {
+		(*(xprt)->xp_ops->xp_unlink)(xprt, flags, tag, line);
+	}
 
 	svc_release_it(xprt, SVC_RELEASE_FLAG_NONE, tag, line);
 }

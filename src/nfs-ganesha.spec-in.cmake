@@ -361,7 +361,7 @@ Summary: The NFS-GANESHA CephFS FSAL
 Group: Applications/System
 Requires:	nfs-ganesha = %{version}-%{release}
 BuildRequires:	libcephfs-devel >= 10.2.0
-BuildRequires:	libacl-devel
+BuildRequires:	libacl1-dev
 
 %description ceph
 This package contains a FSAL shared object to

@@ -124,6 +124,7 @@ extern void xdr_ioq_uv_release(struct xdr_ioq_uv *uv);
 extern struct xdr_ioq *xdr_ioq_create(size_t min_bsize, size_t max_bsize,
 				      u_int uio_flags);
 extern void xdr_ioq_release(struct poolq_head *ioqh);
+extern void xdr_ioq_release_force(struct poolq_head *ioqh);
 extern void xdr_ioq_reset(struct xdr_ioq *xioq, u_int wh_pos);
 extern void xdr_ioq_setup(struct xdr_ioq *xioq);
 

@@ -143,6 +143,7 @@ int nfs3_setattr(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res)
 		 * reclaimable states as well. No NFS4ERR_GRACE in NFS v3, so
 		 * send jukebox error.
 		 */
+#if 0
 		if (!nfs_get_grace_status(false)) {
 			res->res_setattr3.status = NFS3ERR_JUKEBOX;
 			rc = NFS_REQ_OK;
@@ -150,12 +151,15 @@ int nfs3_setattr(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res)
 				     "nfs_in_grace is true");
 			goto out;
 		}
+#endif
 
 		/* For now we don't look for states, so indicate bypass so
 		 * we will get through an NLM_SHARE with deny.
 		 */
 		fsal_status = fsal_setattr(obj, true, NULL, &setattr);
+#if 0
 		nfs_put_grace_status();
+#endif
 
 		if (FSAL_IS_ERROR(fsal_status)) {
 			res->res_setattr3.status =

@@ -161,7 +161,7 @@ rpc_rdma_internals_fini(void)
 
 static int rpc_rdma_bind_server(RDMAXPRT *xprt);
 static struct xp_ops rpc_rdma_ops;
-
+int rpc_rdma_timewait_thread_create(SVCXPRT *svc_xprt);
 /* UTILITY FUNCTIONS */
 
 /**
@@ -1514,7 +1514,7 @@ rpc_rdma_ncreatef(const struct rpc_rdma_attr *xa,
 	__warnx(TIRPC_DEBUG_FLAG_RPC_RDMA,
 		"%s() NFS/RDMA engine bound",
 		__func__);
-
+	(void)rpc_rdma_timewait_thread_create(&xd->sm_dr.xprt);
 	return (&xd->sm_dr.xprt);
 
 failure:
@@ -1797,6 +1797,11 @@ rpc_rdma_clone(RDMAXPRT *l_xprt, struct rdma_cm_id *cm_id)
 	xd->server = RDMAX_SERVER_CHILD;
 
 	xd->event_channel = l_xprt->event_channel;
+
+	xd->sm_dr.maxrec = l_xprt->sm_dr.maxrec;
+	xd->sm_dr.pagesz = l_xprt->sm_dr.pagesz;
+	xd->sm_dr.recvsz = l_xprt->sm_dr.recvsz;
+	xd->sm_dr.sendsz = l_xprt->sm_dr.sendsz;
 
 	rc = rpc_rdma_pd_get(xd);
 	if (rc) {
@@ -2256,3 +2261,46 @@ static struct xp_ops rpc_rdma_ops = {
 	.xp_control = rpc_rdma_control,
 	.xp_free_user_data = NULL,	/* no default */
 };
+static void *rpc_rdma_timewait(void *xprt) {
+	SVCXPRT *svc_xprt = (SVCXPRT *)xprt;
+	for (;;) {
+		svc_rdma_rendezvous(svc_xprt);
+		//sleep(1);
+	}
+	return NULL;
+}
+int
+rpc_rdma_timewait_thread_create(SVCXPRT *svc_xprt)
+{
+	pthread_attr_t attr;
+	pthread_t thrid;
+	int rc;
+	rc = pthread_attr_init(&attr);
+	__warnx(TIRPC_DEBUG_FLAG_ERROR,
+				"[rdma] %s() rc= %s (%d)",
+				__func__, strerror(rc), rc);	
+	if (rc) {
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+				"%s() can't init pthread's attributes: %s (%d)",
+				__func__, strerror(rc), rc);	
+		return rc;
+	}
+	rc = pthread_attr_setscope(&attr, PTHREAD_SCOPE_SYSTEM);
+	if (rc) {
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+				"%s() can't set pthread's scope: %s (%d)",
+				__func__, strerror(rc), rc);	
+		return rc;
+	}
+	rc = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
+	if (rc) {
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+				"%s() can't set pthread's join state: %s (%d)",
+				__func__, strerror(rc), rc);	
+		return rc;
+	}
+	return pthread_create(&thrid, &attr, rpc_rdma_timewait, (void *)svc_xprt);
+	 
+
+
+}

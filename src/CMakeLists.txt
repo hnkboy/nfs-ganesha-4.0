@@ -382,7 +382,7 @@ if(USE_GTEST)
 endif(USE_GTEST)
 
 # NFS RDMA
-option(USE_NFS_RDMA "enable NFS/RDMA support" OFF)
+option(USE_NFS_RDMA "enable NFS/RDMA support" ON)
 
 if(USE_NFS_RDMA)
     # NFS/RDMA is unsupported and should not be used currently
@@ -392,7 +392,7 @@ if(USE_NFS_RDMA)
     message(STATUS "supported by the active development team. If anyone develops an interest")
     message(STATUS "in actively developing and supporting RDMA, we would welcome you.")
     message(STATUS "-------------------------------------------------------------------------")
-    message(FATAL_ERROR "Aborting - NFS/RDMA not currently supported.")
+    #message(FATAL_ERROR "Aborting - NFS/RDMA not currently supported.")
 endif(USE_NFS_RDMA)
 
 # Enable 9P Support

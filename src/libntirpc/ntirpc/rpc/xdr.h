@@ -133,7 +133,8 @@ typedef struct xdr_vio {
 	uint8_t *vio_wrap;	/* maximum vio_tail */
 	uint32_t vio_length;	/* length of buffer, used for vector
 				   pre-allocation */
-	vio_type vio_type;	/* type of buffer */   
+	uint32_t vio_rawlen;
+	vio_type vio_type;	/* type of buffer */
 } xdr_vio;
 
 /* vio_wrap >= vio_tail >= vio_head >= vio_base */
@@ -145,6 +146,7 @@ typedef struct xdr_vio {
 #define UIO_FLAG_MORE		0x0008
 #define UIO_FLAG_REALLOC	0x0010
 #define UIO_FLAG_REFER		0x0020
+#define UIO_FLAG_KEEP		0x0080
 
 struct xdr_uio;
 typedef void (*xdr_uio_release)(struct xdr_uio *, u_int);

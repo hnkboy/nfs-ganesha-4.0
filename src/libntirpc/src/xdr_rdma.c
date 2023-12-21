@@ -693,21 +693,28 @@ static int
 xdr_rdma_wait_read_cb(RDMAXPRT *xprt, struct rpc_rdma_cbc *cbc, int sge,
 		     struct xdr_rdma_segment *rs)
 {
-	mutex_t lock = MUTEX_INITIALIZER;
+	//mutex_t lock = MUTEX_INITIALIZER;
 	int ret;
+	mutex_t *lock = NULL;
+	lock = malloc( sizeof(mutex_t) );
+	if (lock == NULL)
+		return -1;
+	pthread_mutex_init(lock, NULL);
 
+	
 	cbc->positive_cb = xdr_rdma_wait_callback;
 	cbc->negative_cb = xdr_rdma_warn_callback;
-	cbc->callback_arg = &lock;
+	cbc->callback_arg = lock;
 
-	mutex_lock(&lock);
+	mutex_lock(lock);
 	ret = xdr_rdma_post_send_n(xprt, cbc, sge, rs, IBV_WR_RDMA_READ);
 
 	if (!ret) {
-		mutex_lock(&lock);
-		mutex_unlock(&lock);
+		mutex_lock(lock);
+		mutex_unlock(lock);
 	}
-	mutex_destroy(&lock);
+	mutex_destroy(lock);
+	free(lock);
 
 	return ret;
 }
@@ -716,21 +723,28 @@ static int
 xdr_rdma_wait_write_cb(RDMAXPRT *xprt, struct rpc_rdma_cbc *cbc, int sge,
 		      struct xdr_rdma_segment *rs)
 {
-	mutex_t lock = MUTEX_INITIALIZER;
+	//mutex_t lock = MUTEX_INITIALIZER;
 	int ret;
+	
+	mutex_t *lock = NULL;
+	lock = malloc( sizeof(mutex_t) );
+	if (lock == NULL)
+		return -1;
+	pthread_mutex_init(lock, NULL);
 
 	cbc->positive_cb = xdr_rdma_wait_callback;
 	cbc->negative_cb = xdr_rdma_warn_callback;
-	cbc->callback_arg = &lock;
+	cbc->callback_arg = lock;
 
-	mutex_lock(&lock);
+	mutex_lock(lock);
 	ret = xdr_rdma_post_send_n(xprt, cbc, sge, rs, IBV_WR_RDMA_WRITE);
 
 	if (!ret) {
-		mutex_lock(&lock);
-		mutex_unlock(&lock);
+		mutex_lock(lock);
+		mutex_unlock(lock);
 	}
-	mutex_destroy(&lock);
+	mutex_destroy(lock);
+	free(lock);
 
 	return ret;
 }
@@ -927,9 +941,9 @@ xdr_rdma_destroy(RDMAXPRT *xd)
 	xdr_ioq_destroy_pool(&xd->sm_dr.ioq.ioq_uv.uvqh);
 
 	/* must be after queues, xdr_ioq_destroy() moves them here */
-	xdr_ioq_release(&xd->inbufs.uvqh);
+	xdr_ioq_release_force(&xd->inbufs.uvqh);
 	poolq_head_destroy(&xd->inbufs.uvqh);
-	xdr_ioq_release(&xd->outbufs.uvqh);
+	xdr_ioq_release_force(&xd->outbufs.uvqh);
 	poolq_head_destroy(&xd->outbufs.uvqh);
 
 	/* must be after pools */
@@ -1176,8 +1190,9 @@ xdr_rdma_svc_recv(struct rpc_rdma_cbc *cbc, u_int32_t xid)
 	xdr_ioq_reset(&cbc->holdq, ((uintptr_t)cbc->call_data
 				  - (uintptr_t)cmsg));
 
-	while (rl(cbc->read_chunk)->present != 0
-	    && rl(cbc->read_chunk)->position == 0) {
+	//while (rl(cbc->read_chunk)->present != 0
+	 //   && rl(cbc->read_chunk)->position == 0) {
+	while (rl(cbc->read_chunk)->present != 0) {
 		l = ntohl(rl(cbc->read_chunk)->target.length);
 		k = xdr_rdma_chunk_fetch(&cbc->workq, &xprt->inbufs.uvqh,
 					 "call chunk", l,
@@ -1238,7 +1253,7 @@ xdr_rdma_svc_reply(struct rpc_rdma_cbc *cbc, u_int32_t xid)
 		 * (OK on RPC/RDMA Read)
 		 */
 		have = xdr_ioq_uv_fetch(&cbc->holdq, &xprt->outbufs.uvqh,
-					"sreply buffer", 1, IOQ_FLAG_NONE);
+					"sreply buffer", 3, IOQ_FLAG_NONE);
 
 		/* buffer is limited size */
 		IOQ_(have)->v.vio_head =
@@ -1522,10 +1537,16 @@ xdr_rdma_svc_flushout(struct rpc_rdma_cbc *cbc)
 	}
 
 	/* actual send, callback will take care of cleanup */
+	pthread_mutex_lock(&cbc->holdq.ioq_uv.uvqh.qmutex);
 	TAILQ_REMOVE(&cbc->holdq.ioq_uv.uvqh.qh, &head_uv->uvq, q);
 	(cbc->holdq.ioq_uv.uvqh.qcount)--;
+	pthread_mutex_unlock(&cbc->holdq.ioq_uv.uvqh.qmutex);
+
+	pthread_mutex_lock(&cbc->workq.ioq_uv.uvqh.qmutex);
 	(cbc->workq.ioq_uv.uvqh.qcount)++;
 	TAILQ_INSERT_HEAD(&cbc->workq.ioq_uv.uvqh.qh, &head_uv->uvq, q);
+	pthread_mutex_unlock(&cbc->workq.ioq_uv.uvqh.qmutex);
+
 	xdr_rdma_post_send_cb(xprt, cbc, cbc->workq.ioq_uv.uvqh.qcount);
 
 	/* free the old inbuf we only kept for header */

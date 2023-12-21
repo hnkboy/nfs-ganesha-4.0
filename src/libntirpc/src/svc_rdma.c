@@ -71,7 +71,8 @@ svc_rdma_rendezvous(SVCXPRT *xprt)
 	struct sockaddr_storage *ss;
 	RDMAXPRT *req_xd = RDMA_DR(REC_XPRT(xprt));
 	RDMAXPRT *xd = rpc_rdma_accept_wait(req_xd,
-					    __svc_params->idle_timeout);
+					    //__svc_params->idle_timeout);
+					    20000);
 
 	if (!xd) {
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
@@ -110,8 +111,9 @@ svc_rdma_rendezvous(SVCXPRT *xprt)
 
 	SVC_REF(xprt, SVC_REF_FLAG_NONE);
 	xd->sm_dr.xprt.xp_parent = xprt;
-	if (xprt->xp_dispatch.rendezvous_cb(&xd->sm_dr.xprt)
-	 || svc_rqst_xprt_register(&xd->sm_dr.xprt, xprt)) {
+	//if (xprt->xp_dispatch.rendezvous_cb(&xd->sm_dr.xprt)
+	 //|| svc_rqst_xprt_register(&xd->sm_dr.xprt, xprt)) {
+	if (xprt->xp_dispatch.rendezvous_cb(&xd->sm_dr.xprt)) {
 		SVC_DESTROY(&xd->sm_dr.xprt);
 		return (XPRT_DESTROYED);
 	}
@@ -230,8 +232,6 @@ svc_rdma_destroy(SVCXPRT *xprt, u_int flags, const char *tag, const int line)
 		" should actually destroy things @ %s:%d",
 		__func__, xprt, xprt->xp_refcnt, tag, line);
 
-	xdr_rdma_destroy(xd);
-
 	if (xprt->xp_ops->xp_free_user_data) {
 		/* call free hook */
 		xprt->xp_ops->xp_free_user_data(xprt);
@@ -239,6 +239,7 @@ svc_rdma_destroy(SVCXPRT *xprt, u_int flags, const char *tag, const int line)
 	if (xprt->xp_parent)
 		SVC_RELEASE(xprt->xp_parent, SVC_RELEASE_FLAG_NONE);
 	rpc_rdma_destroy(xd);
+	xdr_rdma_destroy(xd);
 }
 
 extern mutex_t ops_lock;
