@@ -56,7 +56,8 @@
  * they are rarely checked.
  */
 
-#define CALLQ_SIZE (2)
+//#define CALLQ_SIZE (2)
+#define CALLQ_SIZE (10)
 #define RFC5666_BUFFER_SIZE (1024)
 #define RPCRDMA_VERSION (1)
 
@@ -85,7 +86,8 @@ rpcrdma_dump_msg(struct xdr_ioq_uv *data, char *comment, uint32_t xid)
 
 	xid = ntohl(xid);
 	if (sized == 0) {
-		__warnx(TIRPC_DEBUG_FLAG_XDR,
+		//__warnx(TIRPC_DEBUG_FLAG_XDR,
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
 			"rpcrdma 0x%" PRIx32 "(%" PRIu32 ") %s?",
 			xid, xid, comment);
 		return;
@@ -114,7 +116,8 @@ rpcrdma_dump_msg(struct xdr_ioq_uv *data, char *comment, uint32_t xid)
 	}
 quit:
 	buffer[m] = '\0';	/* in case of error */
-	__warnx(TIRPC_DEBUG_FLAG_XDR,
+	//__warnx(TIRPC_DEBUG_FLAG_XDR,
+	__warnx(TIRPC_DEBUG_FLAG_ERROR,
 		"rpcrdma 0x%" PRIx32 "(%" PRIu32 ") %s:%s\n",
 		xid, xid, comment, buffer);
 	mem_free(buffer, buffered);
@@ -1215,6 +1218,58 @@ xdr_rdma_svc_recv(struct rpc_rdma_cbc *cbc, u_int32_t xid)
 						+ sizeof(struct xdr_read_list);
 	}
 
+
+
+	struct xdr_read_list *read_chunk = (struct xdr_read_list *)cbc->read_chunk;
+	struct xdr_write_list *write_chunk = (struct xdr_write_list *)cbc->write_chunk;
+	struct xdr_write_list *reply_chunk = (struct xdr_write_list *)cbc->reply_chunk;
+
+
+	while (read_chunk->present != 0) {
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+				"NFS/FABRIC %s: read_chunk position:%d, present:%d,target:{ handle:0x%x,length:%d,offset%d }", __func__,
+				read_chunk->position,
+				read_chunk->present,
+				read_chunk->target.handle,
+				read_chunk->target.length,
+				read_chunk->target.offset);
+
+		read_chunk = (struct xdr_read_list *)((char *)read_chunk + sizeof(struct xdr_read_list));
+	}
+
+	while (write_chunk->present != 0) {
+		int i = 0, elements= write_chunk->elements;
+		for(; i < elements; i++) {
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+				"NFS/FABRIC %s: write_chunk position:%d, elements:%d,entry[%d]:{ handle:0x%x,length:%d,offset%d }", __func__,
+				write_chunk->present,
+				write_chunk->elements,
+				i,
+				write_chunk->entry[i].target.handle,
+				write_chunk->entry[i].target.length,
+				write_chunk->entry[i].target.offset);
+		}
+		write_chunk = (struct xdr_write_list *)((char *)write_chunk + sizeof(struct xdr_write_list));
+	}
+	while (reply_chunk->present != 0) {
+		int i = 0, elements= reply_chunk->elements;
+		for(; i < elements; i++) {
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+				"NFS/FABRIC %s: write_chunk position:%d, elements:%d,entry[%d]:{ handle:0x%x,length:%d,offset%d }", __func__,
+				reply_chunk->present,
+				reply_chunk->elements,
+				i,
+				reply_chunk->entry[i].target.handle,
+				reply_chunk->entry[i].target.length,
+				reply_chunk->entry[i].target.offset);
+		}
+		reply_chunk = (struct xdr_write_list *)((char *)reply_chunk + sizeof(struct xdr_write_list));
+	}
+
+
+
+
+
 	return (true);
 }
 
@@ -1510,6 +1565,8 @@ xdr_rdma_svc_flushout(struct rpc_rdma_cbc *cbc)
 
 			*w_seg = *c_seg;
 
+			__warnx(TIRPC_DEBUG_FLAG_ERROR,
+				"%s() NFS/RDMA [write] ,cbc %p,k %d, w_seg %p qcount %d.", __func__, cbc, k, w_seg, cbc->workq.ioq_uv.uvqh.qcount);
 			/* sometimes, back-to-back buffers could be sent
 			 * together.  releases of unused buffers and
 			 * other events eventually scramble the buffers
@@ -1547,6 +1604,8 @@ xdr_rdma_svc_flushout(struct rpc_rdma_cbc *cbc)
 	TAILQ_INSERT_HEAD(&cbc->workq.ioq_uv.uvqh.qh, &head_uv->uvq, q);
 	pthread_mutex_unlock(&cbc->workq.ioq_uv.uvqh.qmutex);
 
+	__warnx(TIRPC_DEBUG_FLAG_ERROR,
+		"%s() NFS/RDMA [send] , qcount %d.", __func__, cbc->workq.ioq_uv.uvqh.qcount);
 	xdr_rdma_post_send_cb(xprt, cbc, cbc->workq.ioq_uv.uvqh.qcount);
 
 	/* free the old inbuf we only kept for header */

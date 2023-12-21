@@ -406,7 +406,7 @@ if(USE_NFS3)
     # Enable NLM Support
     option(USE_NLM "enable NLM support" ON)
     # Enable NFSACL3 protocol extension support
-    option(USE_NFSACL3 "enable NFSACLv3 support" ON)
+    option(USE_NFSACL3 "enable NFSACLv3 support" OFF)
 else(USE_NFS3)
     # Disable NLM Support
     set(USE_NLM OFF)

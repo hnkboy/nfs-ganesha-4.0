@@ -480,7 +480,6 @@ static inline void svc_destroy_it(SVCXPRT *xprt,
 	}
 
 	/* unlink before dropping last ref */
-	(*(xprt)->xp_ops->xp_unlink)(xprt, flags, tag, line);
 	if( *(xprt)->xp_ops->xp_unlink != NULL ) {
 		(*(xprt)->xp_ops->xp_unlink)(xprt, flags, tag, line);
 	}

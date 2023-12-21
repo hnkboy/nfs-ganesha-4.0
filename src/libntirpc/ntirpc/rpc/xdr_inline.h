@@ -437,8 +437,8 @@ xdr_opaque_decode(XDR *xdrs, char *cp, u_int cnt)
 	 */
 	if (!XDR_GETBYTES(xdrs, cp, cnt)) {
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
-			"%s:%u ERROR opaque",
-			__func__, __LINE__);
+			"%s:%u ERROR opaque. cnt %d.",
+			__func__, __LINE__, cnt);
 		return (false);
 	}
 
