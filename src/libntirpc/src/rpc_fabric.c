@@ -153,6 +153,25 @@ char g_rx_buf[BUF_SIZE];
 	__warnx(TIRPC_DEBUG_FLAG_ERROR, \
 	"%s() NFS/FABRIC  "fmt"\n", __func__, ##__VA_ARGS__);
 
+#include <rdma/fi_errno.h>
+
+static void print_cq_error(struct fid_cq* cq) {
+	int ret;
+	struct fi_cq_err_entry cq_err;
+	ret = fi_cq_readerr(cq, &cq_err, 0);
+	if (ret < 0) {
+		FT_PRINTERR("fi_cq_readerr", ret);
+	} else {
+		FT_CQ_ERR(cq, cq_err, NULL, 0);
+	}
+}
+
+
+
+
+
+
+
 struct xp_ops rpc_fabric_ops;
 
 
@@ -198,16 +217,6 @@ rpc_fabric_setup_cbq(struct poolq_head *ioqh, u_int depth, u_int sge)
 		TAILQ_INSERT_TAIL(&ioqh->qh, &cbc->workq.ioq_s, q);
 	}
 	return 0;
-}
-static void print_cq_error(struct fid_cq* cq) {
-	int ret;
-	struct fi_cq_err_entry cq_err;
-	ret = fi_cq_readerr(cq, &cq_err, 0);
-	if (ret < 0) {
-		FT_PRINTERR("fi_cq_readerr", ret);
-	} else {
-		FT_CQ_ERR(cq, cq_err, NULL, 0);
-	}
 }
 
 
@@ -1557,14 +1566,20 @@ xdr_fabric_write_cb(RDMAXPRT *xprt, struct rpc_rdma_cbc *cbc, int sge,
 		rma_msg.data = remote_cq_data;
 		ret = fi_writemsg(ep, &rma_msg, 0);
 	#else
+		char buf[1024];
+		memset(buf, 0, 1024);
 		int i = 0,offset = 0;
-		for (; i<sge-1; i++) {
-			offset += send_iov[i].iov_len;	
-			memcpy(send_iov[0].iov_base + offset , send_iov[i+1].iov_base,  send_iov[i+1].iov_len);
-		}
-
+		//for (; i<sge-1; i++) {
+		//	offset += send_iov[i].iov_len;	
+		//	memcpy(send_iov[0].iov_base + offset , send_iov[i+1].iov_base,  send_iov[i+1].iov_len);
+		//}
+        for (; i<sge; i++) {
+            memcpy(buf + offset , send_iov[i].iov_base,  send_iov[i].iov_len);
+            offset += send_iov[i].iov_len;  
+        }	
 		//ret = fi_write(ep, &rma_msg, 0);
-		ret = fi_write(ep, send_iov[0].iov_base, totalsize, mr_desc, remote_fi_addr, remote_addr, rkey, NULL);
+		//ret = fi_write(ep, send_iov[0].iov_base, totalsize, mr_desc, remote_fi_addr, remote_addr, rkey, NULL);
+		ret = fi_write(ep, buf, totalsize, NULL, remote_fi_addr, remote_addr, (uint64_t)rkey, NULL);
 	#endif	
 		if (ret == 0){
 			wait_sendcq();
@@ -1592,25 +1607,37 @@ xdr_fabric_write_cb(RDMAXPRT *xprt, struct rpc_rdma_cbc *cbc, int sge,
 		msg.desc = &mr_desc;
 
 	#else
+		char buf[1024];
+		memset(buf, 0, 1024);
 		int i = 0,offset = 0;
+		#if 0
 		for (; i<sge-1; i++) {
 			offset += send_iov[i].iov_len;	
 			memcpy(send_iov[0].iov_base + offset , send_iov[i+1].iov_base,  send_iov[i+1].iov_len);
 		}
-		//ret = fi_send(ep, send_iov[0].iov_base, totalsize, NULL, remote_fi_addr, NULL);
+		#endif
 
+        for (; i<sge; i++) {
+            memcpy(buf + offset , send_iov[i].iov_base,  send_iov[i].iov_len);
+            offset += send_iov[i].iov_len;  
+        }	
+
+		//ret = fi_send(ep, send_iov[0].iov_base, totalsize, NULL, remote_fi_addr, NULL);
 		do { 
-			ret = fi_send(ep, send_iov[0].iov_base, totalsize, NULL, remote_fi_addr, NULL); 
+			//ret = fi_send(ep, send_iov[0].iov_base, totalsize>200 ? 200 : totalsize, NULL, remote_fi_addr, NULL); 
+			ret = fi_send(ep, buf, totalsize, NULL, remote_fi_addr, NULL); 
 			if (ret && ret != -FI_EAGAIN) {
 				FA_PRINT("error fi_send %d\n", ret); 
 				return ret;
 			}
 			if (ret == -FI_EAGAIN) {
-				(void) fi_cq_read(txcq, NULL, 0);
-				FA_PRINT("error fi_send size %d, ret:%d\n", totalsize, ret);
+				print_cq_error(txcq);
+				ret  = fi_cq_read(txcq, NULL, 0);
+				FA_PRINT("error fi_send size %d, FI_EAGAIN ret:%d\n", totalsize, ret);
+
 				sleep(1);
 			}
-		} while (ret);
+		} while (0);
 
 	#endif
 		if (ret == 0){
