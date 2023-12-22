@@ -1608,8 +1608,29 @@ xdr_rdma_svc_flushout(struct rpc_rdma_cbc *cbc)
 	TAILQ_INSERT_HEAD(&cbc->workq.ioq_uv.uvqh.qh, &head_uv->uvq, q);
 	pthread_mutex_unlock(&cbc->workq.ioq_uv.uvqh.qmutex);
 
-	__warnx(TIRPC_DEBUG_FLAG_ERROR,
-		"%s() NFS/RDMA [send] , qcount %d.", __func__, cbc->workq.ioq_uv.uvqh.qcount);
+{
+	struct poolq_entry *have = TAILQ_FIRST(&cbc->workq.ioq_uv.uvqh.qh);
+
+	while (have) {
+		uint32_t totalsize = 0;
+		uint32_t length = ioquv_length(IOQ_(have));
+		void *addr = (void *)(IOQ_(have)->v.vio_head);
+		
+		totalsize += length;
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+			"%s() JERRY NFS/RDMA [SEND] cbc->workq : addr %p, len %d.", __func__, addr, length);
+		
+		have = TAILQ_NEXT(have, q);
+		if(!have)
+			__warnx(TIRPC_DEBUG_FLAG_ERROR,
+				"%s() JERRY NFS/RDMA [SEND] cbc->workq : totalsize %d. qcount %d.", __func__, totalsize, cbc->workq.ioq_uv.uvqh.qcount);
+	}	
+
+
+
+}
+
+
 	xdr_rdma_post_send_cb(xprt, cbc, cbc->workq.ioq_uv.uvqh.qcount);
 
 	/* free the old inbuf we only kept for header */

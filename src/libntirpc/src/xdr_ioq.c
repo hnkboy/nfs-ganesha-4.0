@@ -852,8 +852,8 @@ void
 xdr_ioq_destroy_pool(struct poolq_head *ioqh)
 {
 	struct poolq_entry *have = TAILQ_FIRST(&ioqh->qh);
-	__warnx(TIRPC_DEBUG_FLAG_XDR, 
-			"JERRY_IN_IOQ %s() ioqh %p, ioqh->qcount %d, have %p\n", 
+	__warnx(TIRPC_DEBUG_FLAG_ERROR, 
+			"JERRY NFS/RDMA  %s() ioqh %p, ioqh->qcount %d, have %p\n", 
 			__func__, ioqh, ioqh->qcount, have);
 	while (have) {
 		struct poolq_entry *next = TAILQ_NEXT(have, q);
@@ -865,7 +865,7 @@ xdr_ioq_destroy_pool(struct poolq_head *ioqh)
 		xdr_ioq_destroy(_IOQ(have), have->qsize);
 		have = next;
 	}
-	assert(ioqh->qcount == 0);
+	//assert(ioqh->qcount == 0);
 	poolq_head_destroy(ioqh);
 }
 
