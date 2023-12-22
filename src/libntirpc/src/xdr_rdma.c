@@ -543,7 +543,8 @@ xdr_rdma_post_send_n(RDMAXPRT *xprt, struct rpc_rdma_cbc *cbc, int sge,
 
 		cbc->sg_list[i].addr = (uintptr_t)(IOQ_(have)->v.vio_head);
 		cbc->sg_list[i].length = length;
-		__warnx(TIRPC_DEBUG_FLAG_XDR,
+		//__warnx(TIRPC_DEBUG_FLAG_XDR,
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
 			"%s() %" PRIx64 ", %" PRIu32 " [%" PRIx32 "]",
 			__func__,
 			cbc->sg_list[i].addr,
@@ -581,6 +582,9 @@ xdr_rdma_post_send_n(RDMAXPRT *xprt, struct rpc_rdma_cbc *cbc, int sge,
 	}
 
 	ret = ibv_post_send(xprt->qp, &cbc->wr.wwr, &xprt->bad_send_wr);
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+			"%s() %p[%u] cbc %p ibv_post_send : %s (%d),qp %p, wr %p, bad_wr %p",
+			__func__, xprt, xprt->state, cbc, strerror(ret), ret, xprt->qp, cbc->wr.wwr, xprt->bad_send_wr);
 	if (ret) {
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
 			"%s() %p[%u] cbc %p ibv_post_send failed: %s (%d)",
