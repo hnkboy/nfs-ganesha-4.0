@@ -564,6 +564,10 @@ xdr_rdma_post_send_n(RDMAXPRT *xprt, struct rpc_rdma_cbc *cbc, int sge,
 	cbc->wr.wwr.sg_list = cbc->sg_list;
 	cbc->wr.wwr.num_sge = i;
 
+	__warnx(TIRPC_DEBUG_FLAG_ERROR,
+			"%s() cbc wr.wwr.next: %p, wr_id %d, opcode %d, send_flags %d, sg_list %p, num_sge %d.",
+			__func__, 
+			 cbc->wr.wwr.next ,cbc->wr.wwr.wr_id ,cbc->wr.wwr.opcode,cbc->wr.wwr.send_flags,cbc->wr.wwr.sg_list,cbc->wr.wwr.num_sge);
 	if (rs) {
 		cbc->wr.wwr.wr.rdma.rkey = ntohl(rs->handle);
 		cbc->wr.wwr.wr.rdma.remote_addr =
@@ -582,7 +586,7 @@ xdr_rdma_post_send_n(RDMAXPRT *xprt, struct rpc_rdma_cbc *cbc, int sge,
 	}
 
 	ret = ibv_post_send(xprt->qp, &cbc->wr.wwr, &xprt->bad_send_wr);
-		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+	__warnx(TIRPC_DEBUG_FLAG_ERROR,
 			"%s() %p[%u] cbc %p ibv_post_send : %s (%d),qp %p, wr %p, bad_wr %p",
 			__func__, xprt, xprt->state, cbc, strerror(ret), ret, xprt->qp, cbc->wr.wwr, xprt->bad_send_wr);
 	if (ret) {
@@ -1241,7 +1245,7 @@ xdr_rdma_svc_recv(struct rpc_rdma_cbc *cbc, u_int32_t xid)
 		read_chunk = (struct xdr_read_list *)((char *)read_chunk + sizeof(struct xdr_read_list));
 	}
 
-	while (write_chunk->present != 0) {
+	if (write_chunk->present != 0) {
 		int i = 0, elements= write_chunk->elements;
 		for(; i < elements; i++) {
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
@@ -1253,9 +1257,9 @@ xdr_rdma_svc_recv(struct rpc_rdma_cbc *cbc, u_int32_t xid)
 				write_chunk->entry[i].target.length,
 				write_chunk->entry[i].target.offset);
 		}
-		write_chunk = (struct xdr_write_list *)((char *)write_chunk + sizeof(struct xdr_write_list));
+	//	write_chunk = (struct xdr_write_list *)((char *)write_chunk + sizeof(struct xdr_write_list));
 	}
-	while (reply_chunk->present != 0) {
+	if (reply_chunk->present != 0) {
 		int i = 0, elements= reply_chunk->elements;
 		for(; i < elements; i++) {
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
@@ -1267,7 +1271,7 @@ xdr_rdma_svc_recv(struct rpc_rdma_cbc *cbc, u_int32_t xid)
 				reply_chunk->entry[i].target.length,
 				reply_chunk->entry[i].target.offset);
 		}
-		reply_chunk = (struct xdr_write_list *)((char *)reply_chunk + sizeof(struct xdr_write_list));
+		//reply_chunk = (struct xdr_write_list *)((char *)reply_chunk + sizeof(struct xdr_write_list));
 	}
 
 
@@ -1312,7 +1316,7 @@ xdr_rdma_svc_reply(struct rpc_rdma_cbc *cbc, u_int32_t xid)
 		 * (OK on RPC/RDMA Read)
 		 */
 		have = xdr_ioq_uv_fetch(&cbc->holdq, &xprt->outbufs.uvqh,
-					"sreply buffer", 3, IOQ_FLAG_NONE);
+					"sreply buffer", 1, IOQ_FLAG_NONE);
 
 		/* buffer is limited size */
 		IOQ_(have)->v.vio_head =
@@ -1610,20 +1614,19 @@ xdr_rdma_svc_flushout(struct rpc_rdma_cbc *cbc)
 
 {
 	struct poolq_entry *have = TAILQ_FIRST(&cbc->workq.ioq_uv.uvqh.qh);
-
+	uint32_t totalsize = 0;
 	while (have) {
-		uint32_t totalsize = 0;
 		uint32_t length = ioquv_length(IOQ_(have));
 		void *addr = (void *)(IOQ_(have)->v.vio_head);
 		
 		totalsize += length;
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
-			"%s() JERRY NFS/RDMA [SEND] cbc->workq : addr %p, len %d.", __func__, addr, length);
+			"JERRY NFS/RDMA [SEND] cbc->workq iov: addr %p, len %d.", addr, length);
 		
 		have = TAILQ_NEXT(have, q);
 		if(!have)
 			__warnx(TIRPC_DEBUG_FLAG_ERROR,
-				"%s() JERRY NFS/RDMA [SEND] cbc->workq : totalsize %d. qcount %d.", __func__, totalsize, cbc->workq.ioq_uv.uvqh.qcount);
+				"JERRY NFS/RDMA [SEND] cbc->workq iov: totalsize %d. qcount %d.", totalsize, cbc->workq.ioq_uv.uvqh.qcount);
 	}	
 
 

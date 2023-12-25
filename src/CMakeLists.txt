@@ -310,7 +310,7 @@ endif(USE_MONITORING)
 
 # nTIRPC
 option(USE_SYSTEM_NTIRPC "Use the system nTIRPC, rather than the submodule" OFF)
-option (USE_GSS "enable RPCSEC_GSS support" ON)
+option (USE_GSS "enable RPCSEC_GSS support" OFF)
 option(TIRPC_EPOLL "platform supports EPOLL or emulation" ON)
 
 # Build configure options
